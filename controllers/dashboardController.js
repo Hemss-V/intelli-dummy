@@ -46,7 +46,84 @@ const getPortfolio = async (req, res) => {
     }
 };
 
+const getKPI = async (req, res) => {
+    try {
+        const lenderId = req.lenderId;
+        // Simple aggregation for KPI
+        const result = await pool.query(
+            `SELECT 
+                COUNT(*) as active_invoices,
+                SUM(amount) as total_exposure,
+                COUNT(*) FILTER (WHERE status = 'BLOCKED') as blocked_today
+             FROM invoices WHERE lender_id = $1`,
+            [lenderId]
+        );
+        const alertsResult = await pool.query('SELECT COUNT(*) as count FROM alerts WHERE lender_id = $1 AND resolved = false', [lenderId]);
+
+        const row = result.rows[0];
+
+        res.json({
+            id: 1,
+            activeInvoices: parseInt(row.active_invoices) || 0,
+            activeInvoicesChange: 0,
+            healthScore: 85,
+            tier3Risk: 60,
+            highRiskGaps: parseInt(alertsResult.rows[0].count) || 0,
+            highRiskGapsChange: 0,
+            totalExposure: parseFloat(row.total_exposure) || 0,
+            blockedToday: parseInt(row.blocked_today) || 0,
+            alertsCount: parseInt(alertsResult.rows[0].count) || 0
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch KPI' });
+    }
+};
+
+const getDiscrepancies = async (req, res) => {
+    // Returning a dummy combined structure or DB fetch if GRN table is populated
+    try {
+        const lenderId = req.lenderId;
+        const result = await pool.query(
+            `SELECT i.id, c.name as company_name, i.amount as invoice_value, po.amount as po_value, grn.amount_received as grn_value 
+             FROM invoices i 
+             LEFT JOIN companies c ON i.supplier_id = c.id
+             LEFT JOIN purchase_orders po ON i.po_id = po.id
+             LEFT JOIN goods_receipts grn ON i.grn_id = grn.id
+             WHERE i.lender_id = $1 AND i.status != 'SETTLED'
+             LIMIT 10`,
+            [lenderId]
+        );
+
+        const mapped = result.rows.map(r => ({
+            id: r.id,
+            companyName: r.company_name || 'Unknown',
+            invoiceValue: parseFloat(r.invoice_value) || 0,
+            poValue: parseFloat(r.po_value) || 0,
+            grnValue: parseFloat(r.grn_value) || 0,
+            matchStatus: parseFloat(r.invoice_value) === parseFloat(r.po_value)
+        }));
+
+        res.json(mapped.length > 0 ? mapped : []);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch discrepancies' });
+    }
+};
+
+const getVelocity = async (req, res) => {
+    // Generate latest velocity curve from DB invoices or just return dynamic recent data
+    res.json(Array.from({ length: 14 }).map((_, i) => ({
+        id: i,
+        timestamp: new Date(Date.now() - (13 - i) * 86400000).toISOString(),
+        tier1Velocity: 50 + Math.random() * 10,
+        tier2Velocity: 35 + Math.random() * 8,
+        tier3Velocity: i >= 5 && i <= 8 ? 85 + Math.random() * 5 : 15 + Math.random() * 5,
+    })));
+};
+
 module.exports = {
     getAlerts,
-    getPortfolio
+    getPortfolio,
+    getKPI,
+    getDiscrepancies,
+    getVelocity
 };

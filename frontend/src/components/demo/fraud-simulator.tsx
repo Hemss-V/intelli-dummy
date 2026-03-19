@@ -4,26 +4,35 @@ import { Play, RotateCcw, ShieldAlert, Activity, CheckCircle2 } from "lucide-rea
 export function FraudSimulator() {
     const [phase, setPhase] = useState<'idle' | 'injecting' | 'catching' | 'complete'>('idle');
     const [invoicesProcessed, setInvoicesProcessed] = useState(0);
+    const [targetVolume, setTargetVolume] = useState(150);
+    const [dollarsSaved, setDollarsSaved] = useState(0);
+
+    const baseExposurePerInvoice = 85000;
 
     useEffect(() => {
         let timer: NodeJS.Timeout;
         if (phase === 'injecting') {
-            timer = setTimeout(() => setPhase('catching'), 2000);
+            timer = setTimeout(() => setPhase('catching'), 1500);
         } else if (phase === 'catching') {
             const interval = setInterval(() => {
                 setInvoicesProcessed(prev => {
-                    if (prev >= 340) {
+                    const nextVal = prev + Math.floor(Math.random() * (targetVolume / 10)) + 3;
+                    if (nextVal >= targetVolume) {
                         clearInterval(interval);
                         setPhase('complete');
-                        return 340;
+                        return targetVolume;
                     }
-                    return prev + Math.floor(Math.random() * 15) + 5;
+                    return nextVal;
                 });
-            }, 100);
+            }, 80);
             return () => clearInterval(interval);
         }
         return () => clearTimeout(timer);
-    }, [phase]);
+    }, [phase, targetVolume]);
+
+    useEffect(() => {
+        setDollarsSaved(invoicesProcessed * baseExposurePerInvoice);
+    }, [invoicesProcessed]);
 
     const reset = () => {
         setPhase('idle');
@@ -37,12 +46,14 @@ export function FraudSimulator() {
                     <div className="bg-card border-2 border-primary p-8 rounded-2xl shadow-[0_0_50px_rgba(54,255,143,0.3)] text-center max-w-sm">
                         <ShieldAlert className="w-16 h-16 text-primary mx-auto mb-4" />
                         <h2 className="text-2xl font-bold glow-text text-foreground mb-2">Cascade Neutralized</h2>
-                        <div className="text-4xl font-mono font-black text-primary mb-2">340</div>
+                        <div className="text-4xl font-mono font-black text-primary mb-2">{targetVolume}</div>
                         <p className="text-sm font-bold uppercase tracking-widest text-muted-foreground mb-6">Invoices Blocked</p>
 
                         <div className="p-4 bg-muted/30 rounded-xl border border-primary/20 mb-6">
                             <div className="text-sm text-foreground mb-1">Total Exposure Prevented</div>
-                            <div className="text-2xl font-mono text-primary font-bold">$47,500,000</div>
+                            <div className="text-2xl font-mono text-primary font-bold">
+                                ${(targetVolume * baseExposurePerInvoice).toLocaleString()}
+                            </div>
                         </div>
 
                         <button onClick={reset} className="flex items-center justify-center gap-2 w-full py-3 rounded-xl border border-primary/30 text-primary hover:bg-primary/10 transition-colors font-bold uppercase tracking-wider text-sm">
@@ -52,30 +63,40 @@ export function FraudSimulator() {
                 </div>
             )}
 
-            <div className="flex items-center justify-between mb-6 relative z-10">
+            <div className="flex items-center justify-between mb-4 relative z-10">
                 <div>
                     <h2 className="text-lg font-semibold text-foreground glow-text flex items-center gap-2">
                         <Activity className="w-5 h-5 text-destructive" />
                         Attack Simulator
                     </h2>
-                    <p className="text-sm text-muted-foreground mt-1">Stress-test defense algorithms</p>
+                    <p className="text-sm text-muted-foreground mt-1">Stress-test defense rulesets</p>
                 </div>
             </div>
 
-            <div className="flex-1 flex flex-col items-center justify-center space-y-8 relative z-10">
+            <div className="flex-1 flex flex-col justify-center space-y-6 relative z-10">
 
                 {phase === 'idle' && (
-                    <button
-                        onClick={() => setPhase('injecting')}
-                        className="group relative px-8 py-5 rounded-2xl bg-destructive/10 border-2 border-destructive/50 text-destructive hover:bg-destructive hover:text-white transition-all duration-300 overflow-hidden"
-                    >
-                        <div className="absolute inset-0 bg-destructive/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
-                        <div className="relative z-10 flex flex-col items-center gap-2">
-                            <Play className="w-8 h-8 mb-1" />
-                            <div className="font-bold tracking-widest uppercase text-lg">Inject Phantom Cascade</div>
-                            <div className="text-xs opacity-80 font-mono">Launch T3 Automated Attack Vector</div>
+                    <div className="w-full max-w-xs mx-auto space-y-4">
+                        <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Attack Volume (Invoices)</label>
+                            <input
+                                type="number"
+                                value={targetVolume}
+                                onChange={(e) => setTargetVolume(parseInt(e.target.value) || 10)}
+                                className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono text-center"
+                            />
                         </div>
-                    </button>
+                        <button
+                            onClick={() => setPhase('injecting')}
+                            className="group relative w-full py-4 rounded-xl bg-destructive/10 border-2 border-destructive/50 text-destructive hover:bg-destructive hover:text-white transition-all duration-300 overflow-hidden"
+                        >
+                            <div className="absolute inset-0 bg-destructive/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                            <div className="relative z-10 flex flex-col items-center gap-1">
+                                <Play className="w-6 h-6" />
+                                <div className="font-bold tracking-widest uppercase text-sm">Launch Attack</div>
+                            </div>
+                        </button>
+                    </div>
                 )}
 
                 {phase === 'injecting' && (
@@ -87,17 +108,20 @@ export function FraudSimulator() {
                 )}
 
                 {phase === 'catching' && (
-                    <div className="flex flex-col items-center w-full max-w-xs">
+                    <div className="flex flex-col items-center w-full max-w-xs mx-auto">
                         <CheckCircle2 className="w-12 h-12 text-primary mb-4 animate-bounce" />
                         <div className="text-xl font-bold text-primary tracking-widest uppercase mb-4">AI Defense Active</div>
 
                         <div className="w-full bg-muted rounded-full h-4 mb-2 overflow-hidden border border-border">
-                            <div className="bg-primary h-full transition-all duration-100 glow-border" style={{ width: `${(invoicesProcessed / 340) * 100}%` }}></div>
+                            <div className="bg-primary h-full transition-all duration-100 glow-border" style={{ width: `${(invoicesProcessed / targetVolume) * 100}%` }}></div>
                         </div>
 
                         <div className="flex justify-between w-full text-sm font-mono text-muted-foreground mb-4">
                             <span>Intercepting</span>
-                            <span className="text-primary font-bold">{invoicesProcessed} / 340</span>
+                            <span className="text-primary font-bold">{invoicesProcessed} / {targetVolume}</span>
+                        </div>
+                        <div className="text-xs font-mono text-center text-primary/70">
+                            Saved: ${dollarsSaved.toLocaleString()}
                         </div>
                     </div>
                 )}

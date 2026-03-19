@@ -7,5 +7,8 @@ router.use(ensureLenderAuth);
 
 router.get('/alerts', dashboardController.getAlerts);
 router.get('/lender/:id/portfolio', dashboardController.getPortfolio);
+router.get('/kpi', dashboardController.getKPI);
+router.get('/discrepancies', dashboardController.getDiscrepancies);
+router.get('/velocity', dashboardController.getVelocity);
 
 module.exports = router;

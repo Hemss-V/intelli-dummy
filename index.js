@@ -1,5 +1,6 @@
 const express = require('express');
 const dotenv = require('dotenv');
+const cors = require('cors');
 const fraudRoutes = require('./routes/fraudRoutes');
 const ingestionRoutes = require('./routes/ingestionRoutes');
 const invoiceRoutes = require('./routes/invoiceRoutes');
@@ -7,11 +8,13 @@ const dashboardRoutes = require('./routes/dashboardRoutes');
 const scoreRoutes = require('./routes/scoreRoutes');
 const graphRoutes = require('./routes/graphRoutes');
 const explainRoutes = require('./routes/explainRoutes');
+const retailRoutes = require('./routes/retailRoutes');
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
 // Main APIs
@@ -23,6 +26,7 @@ app.use('/api/graph', graphRoutes);
 app.use('/api/fraud', fraudRoutes); // Keep legacy until fully phased out
 app.use('/api/explain', explainRoutes);
 app.use('/api/identity', require('./routes/identityRoutes'));
+app.use('/api/retail', retailRoutes);
 
 const websocketService = require('./services/websocketService');
 
