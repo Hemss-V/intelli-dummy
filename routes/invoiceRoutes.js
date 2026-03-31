@@ -7,6 +7,8 @@ router.use(ensureLenderAuth);
 
 router.post('/', invoiceController.submitInvoice);
 router.get('/:id', invoiceController.getInvoiceDetails);
+router.get('/:id/audits', invoiceController.getInvoiceAudits);
+router.post('/:id/re-evaluate', invoiceController.reEvaluateInvoice);
 router.post('/:id/disburse', invoiceController.preDisbursementGate);
 router.post('/:id/override', invoiceController.manualOverride);
 

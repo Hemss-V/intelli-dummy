@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useInvoiceQueue, useInvoiceDetail } from "@/hooks/use-dashboard-data";
-import { FileText, ArrowUpRight, Search, X, ShieldAlert, CheckCircle, AlertTriangle, Info } from "lucide-react";
+import { useInvoiceQueue, useInvoiceDetail, useInvoiceAudits, useReEvaluateInvoice } from "@/hooks/use-dashboard-data";
+import { FileText, ArrowUpRight, Search, X, ShieldAlert, CheckCircle, AlertTriangle, Info, RefreshCw, History, ChevronRight } from "lucide-react";
 
 const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-IN', {
@@ -16,8 +16,18 @@ export function InvoiceQueue() {
     const [searchTerm, setSearchTerm] = useState("");
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [selectedDbId, setSelectedDbId] = useState<number | null>(null);
+    const [showHistory, setShowHistory] = useState(false);
     
     const { data: details, isLoading: isLoadingDetails, error } = useInvoiceDetail(selectedDbId ? String(selectedDbId) : null);
+    const { data: audits, isLoading: isLoadingAudits } = useInvoiceAudits(selectedDbId ? String(selectedDbId) : null);
+    const reEvaluate = useReEvaluateInvoice();
+
+    const handleReEvaluate = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (selectedDbId) {
+            await reEvaluate.mutateAsync(String(selectedDbId));
+        }
+    };
 
     if (isLoading || !queue) {
         return (
@@ -70,6 +80,7 @@ export function InvoiceQueue() {
                                 onClick={() => {
                                     setSelectedId(invoice.id);
                                     setSelectedDbId(invoice.dbId);
+                                    setShowHistory(false);
                                 }}
                                 className={`border-b border-border/50 hover:bg-muted/30 cursor-pointer transition-colors ${idx % 2 === 0 ? 'bg-background/20' : ''} ${selectedId === invoice.id ? 'bg-primary/5 border-l-2 border-l-primary' : ''}`}
                             >
@@ -112,21 +123,41 @@ export function InvoiceQueue() {
 
             {/* Risk Analysis Side Panel */}
             {selectedId && (
-                <div className="absolute top-0 right-0 h-full w-80 bg-card/95 backdrop-blur-2xl border-l border-border/50 shadow-2xl z-20 animate-in slide-in-from-right duration-300 flex flex-col">
+                <div className="absolute top-0 right-0 h-full w-96 bg-card/95 backdrop-blur-2xl border-l border-border/50 shadow-2xl z-20 animate-in slide-in-from-right duration-300 flex flex-col">
                     <div className="p-4 border-b border-border/50 flex items-center justify-between bg-muted/30">
-                        <h4 className="font-bold text-sm uppercase tracking-widest text-primary flex items-center gap-2">
-                            <ShieldAlert className="w-4 h-4" />
-                            Risk Analysis
-                        </h4>
-                        <button onClick={(e) => { e.stopPropagation(); setSelectedId(null); }} className="hover:text-primary transition-colors">
-                            <X className="w-5 h-5" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                            <h4 className="font-bold text-sm uppercase tracking-widest text-primary flex items-center gap-2">
+                                <ShieldAlert className="w-4 h-4" />
+                                {showHistory ? "Audit History" : "Risk Analysis"}
+                            </h4>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button 
+                                onClick={handleReEvaluate}
+                                disabled={reEvaluate.isPending}
+                                className={`p-1.5 rounded-md hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all ${reEvaluate.isPending ? 'animate-spin text-primary' : ''}`}
+                                title="Trigger Recalculation"
+                            >
+                                <RefreshCw className="w-4 h-4" />
+                            </button>
+                            <button 
+                                onClick={() => setShowHistory(!showHistory)}
+                                className={`p-1.5 rounded-md hover:bg-primary/10 transition-all ${showHistory ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-primary'}`}
+                                title="View Version History"
+                            >
+                                <History className="w-4 h-4" />
+                            </button>
+                            <button onClick={(e) => { e.stopPropagation(); setSelectedId(null); }} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground transition-colors ml-1">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
                     </div>
 
-                    <div className="flex-1 overflow-auto p-4 space-y-6 custom-scrollbar">
-                        {isLoadingDetails ? (
-                            <div className="flex items-center justify-center h-20">
-                                <span className="text-xs font-mono animate-pulse">Analyzing DNA...</span>
+                    <div className="flex-1 overflow-auto p-4 space-y-6 custom-scrollbar text-foreground">
+                        {isLoadingDetails || (showHistory && isLoadingAudits) ? (
+                            <div className="flex flex-col items-center justify-center h-40 gap-3">
+                                <RefreshCw className="w-6 h-6 text-primary animate-spin" />
+                                <span className="text-xs font-mono glow-text">{showHistory ? 'FETCHING AUDIT LOGS...' : 'ANALYZING DNA...'}</span>
                             </div>
                         ) : error ? (
                             <div className="flex flex-col items-center justify-center p-6 text-center bg-destructive/10 rounded-2xl border border-dashed border-destructive/50">
@@ -135,6 +166,36 @@ export function InvoiceQueue() {
                                 <p className="text-[10px] text-destructive/80 font-mono">
                                     {error instanceof Error ? error.message : "Failed to load invoice details"}
                                 </p>
+                            </div>
+                        ) : showHistory && audits ? (
+                            <div className="space-y-4">
+                                {audits.map((audit: any) => (
+                                    <div key={audit.version} className="bg-background/40 border border-border/30 rounded-xl p-4 hover:border-primary/30 transition-all group">
+                                        <div className="flex justify-between items-start mb-3">
+                                            <div>
+                                                <div className="text-[10px] font-bold text-primary uppercase tracking-widest mb-1">Version {audit.version}</div>
+                                                <div className="text-[10px] text-muted-foreground font-mono">{new Date(audit.created_at).toLocaleString()}</div>
+                                            </div>
+                                            <div className={`text-lg font-bold font-mono ${audit.score >= 60 ? 'text-destructive' : audit.score >= 30 ? 'text-warning' : 'text-primary'}`}>
+                                                {audit.score}
+                                            </div>
+                                        </div>
+                                        <div className="space-y-2">
+                                            {audit.breakdown?.slice(0, 3).map((b: any, i: number) => (
+                                                <div key={i} className="flex items-center gap-2 text-[10px] text-muted-foreground truncate">
+                                                    <ChevronRight className="w-3 h-3 text-primary/50" />
+                                                    <span className="font-semibold text-foreground/80 lowercase">{b.factor.replace(/_/g, ' ')}</span>
+                                                </div>
+                                            ))}
+                                            {audit.breakdown?.length > 3 && (
+                                                <div className="text-[9px] text-muted-foreground pl-5">+ {audit.breakdown.length - 3} more signals</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                                {audits.length === 0 && (
+                                    <div className="text-center p-8 text-muted-foreground text-xs italic">No historical audits found for this entity.</div>
+                                )}
                             </div>
                         ) : details ? (
                             <>
@@ -174,14 +235,17 @@ export function InvoiceQueue() {
 
                                 <section>
                                     <div className="flex items-center justify-between mb-3">
-                                        <h5 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Automated Audit</h5>
+                                        <div className="flex items-center gap-2">
+                                            <h5 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Automated Audit</h5>
+                                            <span className="text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded border border-primary/20 font-mono">v{audits?.[0]?.version || 1}</span>
+                                        </div>
                                         <span className="text-xs font-bold text-primary">{details.risk_score || 0} pts</span>
                                     </div>
                                     <div className="space-y-3">
                                         {details.breakdown && details.breakdown.length > 0 ? (
                                             details.breakdown.map((item: any, i: number) => (
                                                 <div key={i} className="flex gap-3 p-3 rounded-xl bg-background/40 border border-border/30 group hover:border-primary/30 transition-colors">
-                                                    {item.points > 30 ? (
+                                                    {(typeof item.points === 'number' && item.points > 30) || (typeof item.points === 'string' && item.points.includes('x')) ? (
                                                         <ShieldAlert className="w-4 h-4 text-destructive flex-shrink-0" />
                                                     ) : item.points > 15 ? (
                                                         <AlertTriangle className="w-4 h-4 text-warning flex-shrink-0" />
@@ -191,7 +255,9 @@ export function InvoiceQueue() {
                                                     <div className="flex-1 min-w-0">
                                                         <div className="flex justify-between items-start mb-1">
                                                             <span className="text-[11px] font-bold text-foreground truncate">{item.factor.replace(/_/g, ' ')}</span>
-                                                            <span className="text-[10px] font-mono text-muted-foreground">+{item.points}</span>
+                                                            <span className="text-[10px] font-mono text-muted-foreground">
+                                                                {typeof item.points === 'number' ? `+${item.points}` : item.points}
+                                                            </span>
                                                         </div>
                                                         <p className="text-[10px] text-muted-foreground leading-relaxed italic line-clamp-2">
                                                             {item.detail}

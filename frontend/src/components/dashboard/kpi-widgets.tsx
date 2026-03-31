@@ -17,6 +17,11 @@ export function KpiWidgets() {
   if (isLoading || !kpi) return <div className="h-32 flex items-center justify-center text-primary glow-text font-mono">INITIALIZING TELEMETRY...</div>;
 
   const healthData = [{ name: "Health", value: kpi.healthScore, fill: "hsl(var(--primary))" }];
+  const trendText = (value: number) => `${value > 0 ? '+' : ''}${value}% vs prev week`;
+  const tierRowAllZero =
+    Number(kpi.tier1Risk || 0) === 0 &&
+    Number(kpi.tier2Risk || 0) === 0 &&
+    Number(kpi.tier3Risk || 0) === 0;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -44,6 +49,7 @@ export function KpiWidgets() {
             <ShieldCheck className="w-6 h-6 text-primary" />
           </div>
           <p className="text-xs text-muted-foreground mt-1">Network Integrity</p>
+          <p className="text-[11px] text-muted-foreground mt-1">{trendText(kpi.activeInvoicesChange || 0)}</p>
         </div>
         <div className="h-[140px] w-[140px] absolute -right-4 -bottom-4 opacity-80 pointer-events-none">
           <ResponsiveContainer width="100%" height="100%">
@@ -88,8 +94,13 @@ export function KpiWidgets() {
           <span className="text-4xl font-mono font-bold text-warning glow-text" style={{ textShadow: '0 0 10px rgba(234, 179, 8, 0.5)' }}>
             {kpi.alertsCount}
           </span>
-          <span className="text-sm text-muted-foreground">Unresolved flags</span>
+          <span className="text-sm text-muted-foreground">{trendText(kpi.highRiskGapsChange || 0)}</span>
         </div>
+        {!tierRowAllZero && (
+          <div className="text-[11px] text-muted-foreground mt-2">
+            Tier Avg Risk: T1 {Number(kpi.tier1Risk || 0).toFixed(1)} | T2 {Number(kpi.tier2Risk || 0).toFixed(1)} | T3 {Number(kpi.tier3Risk || 0).toFixed(1)}
+          </div>
+        )}
       </div>
 
     </div>

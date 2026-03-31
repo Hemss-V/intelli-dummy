@@ -2,6 +2,62 @@ const pool = require('../db/index');
 const validationService = require('../services/validationService');
 const riskEngineService = require('../services/riskEngineService');
 
+const recomputeInvoiceRisk = async (lenderId, invoiceId) => {
+    const invQuery = await pool.query('SELECT * FROM invoices WHERE id = $1 AND lender_id = $2', [invoiceId, lenderId]);
+    if (invQuery.rows.length === 0) {
+        return null;
+    }
+
+    const invoice = invQuery.rows[0];
+
+    const fpQuery = await pool.query('SELECT fingerprint FROM invoice_fingerprints WHERE invoice_id = $1', [invoiceId]);
+    const fingerprint = fpQuery.rows.length > 0 ? fpQuery.rows[0].fingerprint : null;
+
+    let totalPoints = 0;
+    let finalBreakdown = [];
+
+    if (fingerprint) {
+        const dupCheck = await validationService.detectDuplicates(
+            lenderId,
+            fingerprint,
+            invoice.supplier_id,
+            invoice.buyer_id,
+            invoice.amount,
+            invoice.invoice_date,
+            invoice.invoice_number
+        );
+        if (dupCheck.isDuplicate) {
+            totalPoints += dupCheck.points;
+            finalBreakdown.push(...dupCheck.breakdown);
+        }
+    }
+
+    const tripleCheck = await validationService.checkTripleMatch(
+        lenderId,
+        invoice.po_id,
+        invoice.grn_id,
+        invoice.amount,
+        invoice.invoice_date,
+        invoice.supplier_id,
+        invoice.buyer_id,
+        invoice.invoice_number
+    );
+    totalPoints += tripleCheck.points;
+    finalBreakdown.push(...tripleCheck.breakdown);
+
+    return riskEngineService.evaluateRisk(
+        lenderId,
+        invoice.id,
+        invoice.supplier_id,
+        invoice.buyer_id,
+        invoice.amount,
+        invoice.invoice_date,
+        invoice.expected_payment_date,
+        totalPoints,
+        finalBreakdown
+    );
+};
+
 const getScore = async (req, res) => {
     try {
         const lenderId = req.lenderId;
@@ -12,12 +68,16 @@ const getScore = async (req, res) => {
             return res.status(404).json({ error: 'Invoice not found or access denied' });
         }
 
-        const auditQuery = await pool.query('SELECT score, breakdown, created_at FROM risk_score_audits WHERE invoice_id = $1 ORDER BY created_at DESC', [invoiceId]);
+        const auditQuery = await pool.query(
+            'SELECT score, breakdown, created_at, version, engine_version FROM risk_score_audits WHERE invoice_id = $1 ORDER BY created_at DESC',
+            [invoiceId]
+        );
 
         res.json({
             invoiceId,
             currentScore: invQuery.rows[0].risk_score,
             status: invQuery.rows[0].status,
+            currentBreakdown: auditQuery.rows[0]?.breakdown ?? [],
             history: auditQuery.rows
         });
     } catch (error) {
@@ -31,46 +91,10 @@ const recalculateScore = async (req, res) => {
         const lenderId = req.lenderId;
         const invoiceId = req.params.id;
 
-        const invQuery = await pool.query('SELECT * FROM invoices WHERE id = $1 AND lender_id = $2', [invoiceId, lenderId]);
-        if (invQuery.rows.length === 0) {
+        const riskResult = await recomputeInvoiceRisk(lenderId, invoiceId);
+        if (!riskResult) {
             return res.status(404).json({ error: 'Invoice not found or access denied' });
         }
-
-        const invoice = invQuery.rows[0];
-
-        // Fetch fingerprint
-        const fpQuery = await pool.query('SELECT fingerprint FROM invoice_fingerprints WHERE invoice_id = $1', [invoiceId]);
-        const fingerprint = fpQuery.rows.length > 0 ? fpQuery.rows[0].fingerprint : null;
-
-        let totalPoints = 0;
-        let finalBreakdown = [];
-
-        // 1. Re-check Duplicate Check 
-        if (fingerprint) {
-            const dupCheck = await validationService.detectDuplicates(lenderId, fingerprint, invoice.supplier_id, invoice.buyer_id, invoice.amount, invoice.invoice_date, invoice.invoice_number);
-            if (dupCheck.isDuplicate) {
-                totalPoints += dupCheck.points;
-                finalBreakdown.push(...dupCheck.breakdown);
-            }
-        }
-
-        // 2. Re-check Triple Match (e.g., if a new GRN arrived, or if they are entirely missing)
-        const tripleCheck = await validationService.checkTripleMatch(lenderId, invoice.po_id, invoice.grn_id, invoice.amount, invoice.invoice_date, invoice.supplier_id, invoice.buyer_id);
-        totalPoints += tripleCheck.points;
-        finalBreakdown.push(...tripleCheck.breakdown);
-
-        // 3. Re-evaluate Core 12 Rules 
-        const riskResult = await riskEngineService.evaluateRisk(
-            lenderId,
-            invoice.id,
-            invoice.supplier_id,
-            invoice.buyer_id,
-            invoice.amount,
-            invoice.invoice_date,
-            invoice.expected_payment_date,
-            totalPoints,
-            finalBreakdown
-        );
 
         res.json({
             message: "Score recalculated successfully",
@@ -84,5 +108,6 @@ const recalculateScore = async (req, res) => {
 
 module.exports = {
     getScore,
-    recalculateScore
+    recalculateScore,
+    recomputeInvoiceRisk
 };

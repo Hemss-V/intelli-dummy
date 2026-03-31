@@ -21,10 +21,48 @@ const updateEdgeMetadata = async (lenderId, supplierId, buyerId, amount, goodsCa
 
 const getTopology = async (lenderId) => {
     const nodesQuery = `
-        SELECT id, name, tier, 'company' as type FROM companies WHERE lender_id = $1
+        SELECT
+            c.id,
+            c.name,
+            c.tier,
+            'company' as type,
+            COALESCE(inv.avg_risk_score, 0) AS avg_risk_score,
+            COALESCE(inv.active_invoices, 0) AS active_invoices,
+            COALESCE(inv.total_volume, 0) AS total_volume,
+            COALESCE(inv.current_status, 'APPROVED') AS current_status
+        FROM companies c
+        LEFT JOIN LATERAL (
+            SELECT
+                AVG(i.risk_score) AS avg_risk_score,
+                COUNT(*) AS active_invoices,
+                SUM(i.amount) AS total_volume,
+                (
+                    SELECT i2.status
+                    FROM invoices i2
+                    WHERE i2.lender_id = c.lender_id
+                      AND (i2.supplier_id = c.id OR i2.buyer_id = c.id)
+                    ORDER BY i2.invoice_date DESC NULLS LAST
+                    LIMIT 1
+                ) AS current_status
+            FROM invoices i
+            WHERE i.lender_id = c.lender_id
+              AND (i.supplier_id = c.id OR i.buyer_id = c.id)
+        ) inv ON TRUE
+        WHERE c.lender_id = $1
+        ORDER BY c.id
     `;
     const edgesQuery = `
-        SELECT supplier_id as source, buyer_id as target, total_volume, invoice_count, goods_category 
+        SELECT
+            supplier_id as source,
+            buyer_id as target,
+            total_volume,
+            invoice_count,
+            goods_category,
+            CASE
+                WHEN invoice_count >= 8 THEN 'carousel'
+                WHEN total_volume >= 500000 THEN 'gap'
+                ELSE 'normal'
+            END AS edge_type
         FROM trade_relationships 
         WHERE lender_id = $1
     `;

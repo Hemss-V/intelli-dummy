@@ -1,4 +1,5 @@
 const pool = require('../db/index');
+const { recomputeInvoiceRisk } = require('./scoreController');
 
 const ingestPO = async (req, res) => {
     try {
@@ -43,6 +44,21 @@ const ingestGRN = async (req, res) => {
             [lenderId, po_id, amount_received, grn_date]
         );
 
+        // Evidence arrived: link to candidate invoices and recompute score automatically.
+        const impactedInvoices = await pool.query(
+            `UPDATE invoices
+             SET grn_id = $1
+             WHERE lender_id = $2
+               AND po_id = $3
+               AND (grn_id IS NULL OR grn_id = $1)
+             RETURNING id`,
+            [result.rows[0].id, lenderId, po_id]
+        );
+
+        for (const invoice of impactedInvoices.rows) {
+            await recomputeInvoiceRisk(lenderId, invoice.id);
+        }
+
         res.status(201).json(result.rows[0]);
     } catch (error) {
         console.error('Error ingesting GRN:', error);
@@ -50,7 +66,42 @@ const ingestGRN = async (req, res) => {
     }
 };
 
+const ingestSettlement = async (req, res) => {
+    try {
+        const lenderId = req.lenderId;
+        const { invoice_id, actual_payment_amount, payment_date } = req.body;
+
+        if (!invoice_id || !actual_payment_amount || !payment_date) {
+            return res.status(400).json({ error: 'Missing required settlement fields' });
+        }
+
+        const invoiceCheck = await pool.query(
+            'SELECT id FROM invoices WHERE id = $1 AND lender_id = $2',
+            [invoice_id, lenderId]
+        );
+        if (invoiceCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Invoice not found or not owned by lender' });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO settlements (invoice_id, actual_payment_amount, payment_date)
+             VALUES ($1, $2, $3)
+             RETURNING *`,
+            [invoice_id, actual_payment_amount, payment_date]
+        );
+
+        // New payment evidence changes dilution and downstream risk calculations.
+        await recomputeInvoiceRisk(lenderId, invoice_id);
+
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        console.error('Error ingesting settlement:', error);
+        res.status(500).json({ error: 'Failed to ingest settlement' });
+    }
+};
+
 module.exports = {
     ingestPO,
-    ingestGRN
+    ingestGRN,
+    ingestSettlement
 };

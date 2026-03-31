@@ -9,5 +9,6 @@ router.use(ensureLenderAuth);
 // Ingestion endpoints
 router.post('/pos', ingestionController.ingestPO);
 router.post('/grns', ingestionController.ingestGRN);
+router.post('/settlements', ingestionController.ingestSettlement);
 
 module.exports = router;

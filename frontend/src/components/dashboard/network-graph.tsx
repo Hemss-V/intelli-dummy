@@ -9,8 +9,7 @@ import {
   type NodeMouseHandler
 } from '@xyflow/react';
 import { useNetwork } from '@/hooks/use-dashboard-data';
-import { AlertCircle, X, ShieldAlert, CheckCircle2, ChevronDown } from 'lucide-react';
-import { MOCK_TOPOLOGIES } from '@/lib/mockData';
+import { AlertCircle, X, ShieldAlert, CheckCircle2 } from 'lucide-react';
 
 const ScfNode = ({ data }: any) => {
   const isFlagged = data.isFlagged;
@@ -51,20 +50,25 @@ const ScfNode = ({ data }: any) => {
 
 const nodeTypes = { scfNode: ScfNode };
 
-export function NetworkGraph() {
-  const { isLoading } = useNetwork();
-  const [selectedNode, setSelectedNode] = useState<any>(null);
-  const [activeTopologyId, setActiveTopologyId] = useState<string>("anchor-corp");
+const formatCompactCurrency = (value: number) => {
+  return new Intl.NumberFormat('en-IN', {
+    notation: 'compact',
+    maximumFractionDigits: 1
+  }).format(value || 0);
+};
 
-  const activeTopology = MOCK_TOPOLOGIES[activeTopologyId];
+export function NetworkGraph() {
+  const { data: network, isLoading } = useNetwork();
+  const [selectedNode, setSelectedNode] = useState<any>(null);
 
   const initialNodes = useMemo(() => {
-    if (!activeTopology) return [];
-    return activeTopology.nodes.map((node, i) => {
+    if (!network?.nodes) return [];
+    const sortedNodes = [...network.nodes].sort((a: any, b: any) => Number(a.id) - Number(b.id));
+    return sortedNodes.map((node: any, i: number) => {
       let x = 0, y = 0;
       if (node.tier === 'T1') { x = 400; y = 50; }
       else if (node.tier === 'T2') { x = 200 + (i * 150); y = 200; }
-      else { x = 100 + (Math.random() * 200 + (i * 80)); y = 350; } // Added slight random jitter for varying networks
+      else { x = 100 + ((i % 6) * 120); y = 350 + (Math.floor(i / 6) * 90); }
 
       return {
         id: node.id.toString(),
@@ -73,11 +77,11 @@ export function NetworkGraph() {
         data: node
       };
     });
-  }, [activeTopologyId]);
+  }, [network]);
 
   const initialEdges = useMemo(() => {
-    if (!activeTopology) return [];
-    return activeTopology.edges.map(edge => {
+    if (!network?.edges) return [];
+    return network.edges.map((edge: any) => {
       const isGap = edge.type === 'gap';
       const isCarousel = edge.type === 'carousel';
       return {
@@ -96,7 +100,7 @@ export function NetworkGraph() {
         },
       };
     });
-  }, [activeTopologyId]);
+  }, [network]);
 
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     setSelectedNode(node.data);
@@ -104,31 +108,15 @@ export function NetworkGraph() {
 
   if (isLoading) return <div className="h-full w-full flex items-center justify-center text-primary glow-text font-mono animate-pulse">ESTABLISHING TOPOLOGY LINK...</div>;
 
-  if (isLoading) return <div className="h-full w-full flex items-center justify-center text-primary glow-text font-mono animate-pulse">ESTABLISHING TOPOLOGY LINK...</div>;
-
   return (
     <div className="w-full h-full min-h-[500px] rounded-2xl overflow-hidden glow-card border border-border/50 relative bg-background/50">
 
-      {/* Topology Selector Header */}
+      {/* Topology Header */}
       <div className="absolute top-4 left-4 z-10 flex flex-col gap-3 pointer-events-auto">
         <div className="bg-card/90 backdrop-blur-md border border-border/50 rounded-xl p-3 shadow-lg flex flex-col gap-1 w-[260px]">
           <label className="text-xs text-muted-foreground uppercase font-semibold flex items-center gap-2 tracking-wider">
-            Global Anchor Target
+            Live Network Topology
           </label>
-          <div className="relative">
-            <select
-              value={activeTopologyId}
-              onChange={(e) => setActiveTopologyId(e.target.value)}
-              className="w-full appearance-none bg-background/50 border border-border/50 rounded-lg px-3 py-2 text-sm font-bold text-primary focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-all cursor-pointer"
-            >
-              {Object.entries(MOCK_TOPOLOGIES).map(([id, topo]) => (
-                <option key={id} value={id} className="bg-background text-foreground">
-                  {topo.name}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary pointer-events-none" />
-          </div>
         </div>
 
         <div className="bg-card/80 backdrop-blur border border-border/50 rounded-lg p-3 text-xs font-mono space-y-2 pointer-events-none">
@@ -178,18 +166,25 @@ export function NetworkGraph() {
             <div className="grid grid-cols-2 gap-3">
               <div className="p-3 bg-muted/20 rounded-lg border border-border/50">
                 <div className="text-xs text-muted-foreground mb-1 truncate">Status</div>
-                <div className={`text-sm font-semibold flex items-center gap-1 ${selectedNode.isFlagged ? 'text-destructive' : 'text-primary'}`}>
-                  {selectedNode.isFlagged ? <><AlertCircle className="w-3 h-3" /> Flagged</> : <><CheckCircle2 className="w-3 h-3" /> Active</>}
+                <div className={`text-sm font-semibold flex items-center gap-1 ${selectedNode.status === 'BLOCKED' ? 'text-destructive' : selectedNode.status === 'REVIEW' ? 'text-warning' : 'text-primary'}`}>
+                  {selectedNode.status === 'BLOCKED' ? <><AlertCircle className="w-3 h-3" /> Blocked</> :
+                    selectedNode.status === 'REVIEW' ? <><AlertCircle className="w-3 h-3" /> Review</> :
+                    <><CheckCircle2 className="w-3 h-3" /> Approved</>}
                 </div>
               </div>
               <div className="p-3 bg-muted/20 rounded-lg border border-border/50">
-                <div className="text-xs text-muted-foreground mb-1 truncate">Total Volume</div>
-                <div className="text-sm font-mono font-semibold text-foreground">$1.2M</div>
+                <div className="text-xs text-muted-foreground mb-1 truncate">Financed Volume</div>
+                <div className="text-sm font-mono font-semibold text-foreground">
+                  ₹{formatCompactCurrency(Number(selectedNode.totalVolume || 0))}
+                </div>
               </div>
             </div>
+            <div className="text-xs text-muted-foreground">Active invoices: {Number(selectedNode.activeInvoices || 0)}</div>
 
             <div className="space-y-2 mt-4">
-              <div className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Active Alerts (2)</div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">
+                Active Alerts ({selectedNode.isFlagged ? 1 : 0})
+              </div>
               {selectedNode.isFlagged ? (
                 <div className="p-3 bg-destructive/10 border border-destructive/30 rounded-lg text-xs leading-relaxed text-destructive/90">
                   <span className="font-bold">CRITICAL:</span> Node involved in suspected Tier-3 shell carousel. KYC documents failed signature check.

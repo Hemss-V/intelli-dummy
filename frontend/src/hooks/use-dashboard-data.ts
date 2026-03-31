@@ -70,30 +70,33 @@ export function useNetwork() {
   return useQuery({
     queryKey: ["network-topology", lenderId],
     queryFn: async () => {
-      // 1. Check for retail overrides first
-      const localData = localStorage.getItem("sherlock-retail-topology");
-      if (localData) {
-        return JSON.parse(localData);
-      }
-
-      // 2. Fetch real topology
+      // Fetch real topology
       const res = await fetch(`${API_BASE}/graph/topology`, { headers: getHeaders() });
       if (!res.ok) throw new Error('Failed to fetch topology');
       const topology = await res.json();
 
+      const normalizeTier = (tier: any) => {
+        if (typeof tier === "string") return tier;
+        if (typeof tier === "number") return `T${tier}`;
+        return "T1";
+      };
+
       const mappedNodes = topology.nodes.map((n: any) => ({
+        tier: normalizeTier(n.tier),
+        riskScore: Number(n.avg_risk_score || 0),
         id: n.id,
-        label: `${n.name}\n(${n.tier || 'T1'})`,
-        tier: n.tier || 'T1',
-        riskScore: n.tier === 'T3' ? 85 : 20,
-        isFlagged: n.tier === 'T3'
+        label: n.name,
+        totalVolume: Number(n.total_volume || 0),
+        activeInvoices: Number(n.active_invoices || 0),
+        status: n.current_status || "APPROVED",
+        isFlagged: Number(n.avg_risk_score || 0) >= 60
       }));
 
       const mappedEdges = topology.edges.map((e: any, idx: number) => ({
         id: idx + 1,
         source: e.source,
         target: e.target,
-        type: "normal",
+        type: e.edge_type || "normal",
         label: `$${e.total_volume}`
       }));
 
@@ -179,5 +182,40 @@ export function useInvoiceQueue() {
       }));
     },
     refetchInterval: 5000
+  });
+}
+
+export function useInvoiceAudits(id: string | null) {
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useQuery({
+    queryKey: ["invoice-audits", id, lenderId],
+    queryFn: async () => {
+      if (!id) return null;
+      const res = await fetch(`${API_BASE}/invoices/${id}/audits`, { headers: getHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch audits');
+      return await res.json();
+    },
+    enabled: !!id,
+  });
+}
+
+export function useReEvaluateInvoice() {
+  const queryClient = useQueryClient();
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`${API_BASE}/invoices/${id}/re-evaluate`, {
+        method: 'POST',
+        headers: getHeaders(),
+      });
+      if (!res.ok) throw new Error('Failed to re-evaluate');
+      return await res.json();
+    },
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ["invoice-detail", id, lenderId] });
+      queryClient.invalidateQueries({ queryKey: ["invoice-audits", id, lenderId] });
+      queryClient.invalidateQueries({ queryKey: ["invoice-queue", lenderId] });
+      queryClient.invalidateQueries({ queryKey: ["kpi", lenderId] });
+    },
   });
 }

@@ -35,7 +35,7 @@ const getPortfolio = async (req, res) => {
         }
 
         const invQuery = await pool.query(
-            'SELECT id, invoice_number, amount, invoice_date, status, risk_score FROM invoices WHERE lender_id = $1 ORDER BY invoice_date DESC',
+            'SELECT id, invoice_number, supplier_id, buyer_id, amount, invoice_date, status, risk_score FROM invoices WHERE lender_id = $1 ORDER BY invoice_date DESC',
             [lenderIdFromAuth]
         );
 
@@ -49,27 +49,79 @@ const getPortfolio = async (req, res) => {
 const getKPI = async (req, res) => {
     try {
         const lenderId = req.lenderId;
-        // Simple aggregation for KPI
+        // Core KPI aggregation
         const result = await pool.query(
             `SELECT 
                 COUNT(*) as active_invoices,
                 SUM(amount) as total_exposure,
-                COUNT(*) FILTER (WHERE status = 'BLOCKED') as blocked_today
+                COUNT(*) FILTER (WHERE status = 'BLOCKED') as blocked_today,
+                COUNT(*) FILTER (WHERE status = 'APPROVED') as approved_invoices
              FROM invoices WHERE lender_id = $1`,
             [lenderId]
         );
         const alertsResult = await pool.query('SELECT COUNT(*) as count FROM alerts WHERE lender_id = $1 AND resolved = false', [lenderId]);
+        const tierRiskResult = await pool.query(
+            `SELECT
+                COALESCE(AVG(i.risk_score) FILTER (WHERE c.tier = 1), 0) AS tier1_avg_risk,
+                COALESCE(AVG(i.risk_score) FILTER (WHERE c.tier = 2), 0) AS tier2_avg_risk,
+                COALESCE(AVG(i.risk_score) FILTER (WHERE c.tier = 3), 0) AS tier3_avg_risk
+             FROM invoices i
+             JOIN companies c ON c.id = i.supplier_id
+             WHERE i.lender_id = $1`,
+            [lenderId]
+        );
+        const trendResult = await pool.query(
+            `WITH windows AS (
+                SELECT
+                    COUNT(*) FILTER (WHERE invoice_date >= NOW() - INTERVAL '7 days') AS current_invoices,
+                    COUNT(*) FILTER (
+                        WHERE invoice_date < NOW() - INTERVAL '7 days'
+                        AND invoice_date >= NOW() - INTERVAL '14 days'
+                    ) AS previous_invoices
+                FROM invoices
+                WHERE lender_id = $1
+            ),
+            alert_windows AS (
+                SELECT
+                    COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days' AND resolved = false) AS current_alerts,
+                    COUNT(*) FILTER (
+                        WHERE created_at < NOW() - INTERVAL '7 days'
+                        AND created_at >= NOW() - INTERVAL '14 days'
+                        AND resolved = false
+                    ) AS previous_alerts
+                FROM alerts
+                WHERE lender_id = $1
+            )
+            SELECT
+                w.current_invoices,
+                w.previous_invoices,
+                a.current_alerts,
+                a.previous_alerts
+            FROM windows w, alert_windows a`,
+            [lenderId]
+        );
 
         const row = result.rows[0];
+        const trendRow = trendResult.rows[0] || {};
+        const approved = Number(row.approved_invoices) || 0;
+        const active = Number(row.active_invoices) || 0;
+        const pctChange = (current, previous) => {
+            const c = Number(current) || 0;
+            const p = Number(previous) || 0;
+            if (p === 0) return c === 0 ? 0 : 100;
+            return Number((((c - p) / p) * 100).toFixed(2));
+        };
 
         res.json({
             id: 1,
-            activeInvoices: parseInt(row.active_invoices) || 0,
-            activeInvoicesChange: 0,
-            healthScore: 85,
-            tier3Risk: 60,
+            activeInvoices: active,
+            activeInvoicesChange: pctChange(trendRow.current_invoices, trendRow.previous_invoices),
+            healthScore: active === 0 ? 0 : Number(((approved / active) * 100).toFixed(2)),
+            tier1Risk: Number(tierRiskResult.rows[0]?.tier1_avg_risk || 0),
+            tier2Risk: Number(tierRiskResult.rows[0]?.tier2_avg_risk || 0),
+            tier3Risk: Number(tierRiskResult.rows[0]?.tier3_avg_risk || 0),
             highRiskGaps: parseInt(alertsResult.rows[0].count) || 0,
-            highRiskGapsChange: 0,
+            highRiskGapsChange: pctChange(trendRow.current_alerts, trendRow.previous_alerts),
             totalExposure: parseFloat(row.total_exposure) || 0,
             blockedToday: parseInt(row.blocked_today) || 0,
             alertsCount: parseInt(alertsResult.rows[0].count) || 0

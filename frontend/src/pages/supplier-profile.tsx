@@ -1,31 +1,101 @@
 import { useParams, Link } from "wouter";
 import { ArrowLeft, Building2, ShieldCheck, ShieldAlert, Activity, FileText, Network } from "lucide-react";
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-const MOCK_SCORE_HISTORY = [
-    { month: "Jan", score: 12 },
-    { month: "Feb", score: 15 },
-    { month: "Mar", score: 14 },
-    { month: "Apr", score: 18 },
-    { month: "May", score: 25 },
-    { month: "Jun", score: 88 } // Sudden spike
-];
+const API_BASE = "http://localhost:3000/api";
+const getHeaders = () => ({
+    "Content-Type": "application/json",
+    "x-lender-id": localStorage.getItem("sherlock-lender-id") || "1"
+});
 
 export default function SupplierProfilePage() {
     const params = useParams<{ id: string }>();
     const id = params?.id || "1";
+    const lenderId = localStorage.getItem("sherlock-lender-id") || "1";
 
-    // Mock data for supplier
+    const { data: companies = [] } = useQuery({
+        queryKey: ["companies", lenderId],
+        queryFn: async () => {
+            const res = await fetch(`${API_BASE}/identity/companies`, { headers: getHeaders() });
+            if (!res.ok) throw new Error("Failed to fetch companies");
+            return res.json();
+        }
+    });
+
+    const { data: portfolio = [] } = useQuery({
+        queryKey: ["supplier-portfolio", lenderId],
+        queryFn: async () => {
+            const res = await fetch(`${API_BASE}/lender/${lenderId}/portfolio`, { headers: getHeaders() });
+            if (!res.ok) throw new Error("Failed to fetch portfolio");
+            return res.json();
+        }
+    });
+
+    const { data: egoNetwork = [] } = useQuery({
+        queryKey: ["supplier-ego", id, lenderId],
+        queryFn: async () => {
+            const res = await fetch(`${API_BASE}/graph/ego/${id}`, { headers: getHeaders() });
+            if (!res.ok) throw new Error("Failed to fetch ego network");
+            return res.json();
+        }
+    });
+
+    const { data: companyProfile } = useQuery({
+        queryKey: ["company-profile", id, lenderId],
+        queryFn: async () => {
+            const res = await fetch(`${API_BASE}/identity/companies/${id}/profile`, { headers: getHeaders() });
+            if (!res.ok) throw new Error("Failed to fetch company profile");
+            return res.json();
+        }
+    });
+
+    const companyInvoices = useMemo(
+        () => portfolio.filter(
+            (inv: any) =>
+                String(inv.supplier_id) === String(id) ||
+                String(inv.buyer_id) === String(id)
+        ),
+        [portfolio, id]
+    );
+
+    const avgRisk = useMemo(() => {
+        if (!companyInvoices.length) return 0;
+        const total = companyInvoices.reduce((sum: number, inv: any) => sum + Number(inv.risk_score || 0), 0);
+        return Math.round(total / companyInvoices.length);
+    }, [companyInvoices]);
+
+    const latestStatus = companyProfile?.status || companyInvoices[0]?.status || "APPROVED";
+    const totalVolume = Number(companyProfile?.totalVolume || 0);
+    const company = companies.find((c: any) => String(c.id) === String(id));
+
+    const trendMap = useMemo(() => {
+        const map = new Map<string, { month: string; scoreTotal: number; count: number }>();
+        companyInvoices.forEach((inv: any) => {
+            const d = new Date(inv.invoice_date);
+            const month = d.toLocaleString("en-US", { month: "short" });
+            const curr = map.get(month) || { month, scoreTotal: 0, count: 0 };
+            curr.scoreTotal += Number(inv.risk_score || 0);
+            curr.count += 1;
+            map.set(month, curr);
+        });
+        return Array.from(map.values()).map((m) => ({
+            month: m.month,
+            score: Math.round(m.scoreTotal / Math.max(1, m.count))
+        }));
+    }, [companyInvoices]);
+
     const supplier = {
         id,
-        name: "Sub-supplier Y",
-        tier: "Tier 3",
-        status: "BLOCKED",
-        currentScore: 88,
-        did: "did:sherlock:company:992",
-        kycStatus: "REVOKED",
-        totalVolume: 1250000,
-        activeInvoices: 3
+        name: companyProfile?.name || company?.name || `Supplier ${id}`,
+        tier: `Tier ${companyProfile?.tier || company?.tier || 1}`,
+        status: latestStatus,
+        currentScore: Number(companyProfile?.avgRiskScore ?? avgRisk),
+        did: `did:sherlock:company:${id}`,
+        kycStatus: latestStatus === "BLOCKED" ? "REVIEW" : "VERIFIED",
+        totalVolume,
+        activeInvoices: Number(companyProfile?.activeInvoices ?? companyInvoices.length)
     };
 
     const isBlocked = supplier.status === "BLOCKED";
@@ -69,7 +139,7 @@ export default function SupplierProfilePage() {
                         <Building2 className="w-4 h-4 text-primary" /> Total Financed Volume
                     </div>
                     <div className="text-3xl font-mono font-bold text-foreground">
-                        ₹1.25 Cr
+                        ₹{Math.round(supplier.totalVolume).toLocaleString("en-IN")}
                     </div>
                 </div>
                 <div className="bg-card p-6 rounded-2xl border border-border/50 glow-card">
@@ -101,7 +171,7 @@ export default function SupplierProfilePage() {
                     </h2>
                     <div className="flex-1 w-full relative">
                         <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={MOCK_SCORE_HISTORY} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                            <AreaChart data={trendMap} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                                 <defs>
                                     <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
                                         <stop offset="5%" stopColor="hsl(var(--destructive))" stopOpacity={0.3} />
@@ -128,28 +198,24 @@ export default function SupplierProfilePage() {
                         Ego Network
                     </h2>
                     <div className="flex-1 bg-background/50 rounded-xl border border-border/50 flex flex-col items-center justify-center relative overflow-hidden p-4">
-                        <div className="w-full flex justify-between items-center relative z-10 px-4 mt-8">
-                            <div className="p-3 bg-card border border-border rounded-lg text-xs font-mono text-center">
-                                Supplier Alpha
-                                <div className="text-[10px] text-muted-foreground mt-1">T2</div>
+                        {egoNetwork.length === 0 ? (
+                            <div className="text-xs text-muted-foreground text-center px-4">
+                                No direct relationships found for this supplier.
                             </div>
-                            <div className="h-0.5 flex-1 bg-destructive mx-2 relative">
-                                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-destructive text-destructive-foreground text-[10px] px-1 rounded font-bold">CAROUSEL</div>
-                            </div>
-                            <div className="p-3 bg-destructive/10 border-2 border-destructive rounded-lg text-xs font-mono font-bold text-destructive text-center glow-card shadow-[0_0_15px_rgba(220,38,38,0.3)]">
-                                Sub-supplier Y
-                                <div className="text-[10px] text-destructive/80 mt-1">T3 (Focus)</div>
-                            </div>
-                            <div className="h-0.5 flex-1 bg-destructive mx-2"></div>
-                            <div className="p-3 bg-card border border-border rounded-lg text-xs font-mono text-center">
-                                Sub-supplier Z
-                                <div className="text-[10px] text-muted-foreground mt-1">T3</div>
-                            </div>
-                        </div>
-
-                        <div className="mt-8 text-xs text-muted-foreground text-center px-4">
-                            Highly isolated node with singular dependency chain back to Supplier Alpha. Indicates potential shell company structure.
-                        </div>
+                        ) : (
+                            <>
+                                <div className="w-full space-y-2 mt-2">
+                                    {egoNetwork.slice(0, 6).map((edge: any, idx: number) => (
+                                        <div key={idx} className="p-2 bg-card border border-border rounded-lg text-xs">
+                                            {edge.supplier_name} → {edge.buyer_name}
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="mt-4 text-xs text-muted-foreground text-center px-4">
+                                    Live ego-network derived from `trade_relationships`.
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             </div>

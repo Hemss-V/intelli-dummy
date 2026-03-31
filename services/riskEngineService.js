@@ -25,6 +25,54 @@ const graphEngineService = require('./graphEngineService');
 const semanticService = require('./semanticService');
 const explainabilityService = require('./explainabilityService');
 
+const FACTOR_WEIGHTS = {
+    exact_duplicate: 1.0,
+    fuzzy_duplicate: 0.75,
+    triple_match_fail: 0.9,
+    amount_tolerance_fail: 0.5,
+    entity_mismatch: 0.6,
+    entity_mismatch_grn: 0.6,
+    revenue_feasibility: 0.85,
+    single_invoice_large: 0.5,
+    monthly_volume_spike: 0.55,
+    velocity_anomaly: 0.55,
+    off_hours_submission: 0.35,
+    sequential_invoice_nos: 0.45,
+    dormant_entity_burst: 0.7,
+    new_relationship_value: 0.5,
+    single_buyer_supplier: 0.35,
+    payment_term_anomaly: 0.45,
+    dilution_rate_high: 0.6,
+    cascade_over_financing: 0.9,
+    carousel_trade_detected: 1.0,
+    isolated_node_detection: 0.3,
+    semantic_mismatch: 0.9,
+    vague_description: 0.3,
+    templated_invoices: 0.65
+};
+
+let auditSchemaInitPromise = null;
+const ensureAuditSchema = async () => {
+    if (!auditSchemaInitPromise) {
+        auditSchemaInitPromise = Promise.all([
+            pool.query('ALTER TABLE risk_score_audits ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1'),
+            pool.query("ALTER TABLE risk_score_audits ADD COLUMN IF NOT EXISTS engine_version VARCHAR(20) DEFAULT 'v1'")
+        ]);
+    }
+    return auditSchemaInitPromise;
+};
+
+const computeCompositeScore = (breakdown) => {
+    const weightedScore = breakdown.reduce((sum, item) => {
+        const points = Number(item.points);
+        if (Number.isNaN(points)) return sum;
+        const weight = FACTOR_WEIGHTS[item.factor] ?? 0.4;
+        return sum + (points * weight);
+    }, 0);
+
+    return Math.max(0, Math.min(100, Math.round(weightedScore)));
+};
+
 const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, invoiceDate, expectedPaymentDate, basePoints, baseBreakdown) => {
     let totalScore = basePoints || 0;
     const finalBreakdown = [...(baseBreakdown || [])];
@@ -217,6 +265,9 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
         });
     }
 
+    // Layer 3 composite score (0-100): weighted across all factors.
+    totalScore = computeCompositeScore(finalBreakdown);
+
     // Determine target status
     let status = 'APPROVED';
     if (totalScore >= 60) status = 'BLOCKED';
@@ -233,7 +284,13 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
         await pool.query('UPDATE companies SET last_invoice_date = $1 WHERE id = $2', [invDateObj, supplierId]);
     }
 
-    await pool.query('INSERT INTO risk_score_audits (invoice_id, score, breakdown) VALUES ($1, $2, $3)', [invoiceId, totalScore, JSON.stringify(finalBreakdown)]);
+    await ensureAuditSchema();
+    const versionQuery = await pool.query('SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM risk_score_audits WHERE invoice_id = $1', [invoiceId]);
+    const nextVersion = Number(versionQuery.rows[0]?.next_version || 1);
+    await pool.query(
+        'INSERT INTO risk_score_audits (invoice_id, score, breakdown, version, engine_version) VALUES ($1, $2, $3, $4, $5)',
+        [invoiceId, totalScore, JSON.stringify(finalBreakdown), nextVersion, 'v1']
+    );
 
     if (status !== 'APPROVED') {
         const primaryFactor = finalBreakdown.length > 0 ? finalBreakdown[0].factor : 'unknown';

@@ -107,6 +107,8 @@ const executeSchema = async () => {
       invoice_id INTEGER REFERENCES invoices(id),
       score INTEGER,
       breakdown JSONB,
+      version INTEGER DEFAULT 1,
+      engine_version VARCHAR(20) DEFAULT 'v1',
       created_at TIMESTAMP DEFAULT NOW()
     );
 

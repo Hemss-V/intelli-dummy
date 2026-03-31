@@ -71,9 +71,55 @@ const createCompany = async (req, res) => {
     }
 }
 
+const getCompanyProfile = async (req, res) => {
+    try {
+        const lenderId = req.lenderId;
+        const companyId = req.params.id;
+
+        const companyQuery = await pool.query(
+            'SELECT id, name, tier FROM companies WHERE id = $1 AND lender_id = $2',
+            [companyId, lenderId]
+        );
+        if (companyQuery.rows.length === 0) {
+            return res.status(404).json({ error: 'Company not found for lender' });
+        }
+
+        const profileQuery = await pool.query(
+            `SELECT
+                COALESCE(AVG(i.risk_score), 0) AS avg_risk_score,
+                COUNT(*) AS active_invoices,
+                COALESCE(SUM(i.amount), 0) AS total_volume,
+                (
+                    SELECT i2.status
+                    FROM invoices i2
+                    WHERE i2.lender_id = $1
+                      AND (i2.supplier_id = $2 OR i2.buyer_id = $2)
+                    ORDER BY i2.invoice_date DESC NULLS LAST
+                    LIMIT 1
+                ) AS current_status
+             FROM invoices i
+             WHERE i.lender_id = $1
+               AND (i.supplier_id = $2 OR i.buyer_id = $2)`,
+            [lenderId, companyId]
+        );
+
+        res.json({
+            ...companyQuery.rows[0],
+            avgRiskScore: Number(profileQuery.rows[0]?.avg_risk_score || 0),
+            activeInvoices: Number(profileQuery.rows[0]?.active_invoices || 0),
+            totalVolume: Number(profileQuery.rows[0]?.total_volume || 0),
+            status: profileQuery.rows[0]?.current_status || 'APPROVED'
+        });
+    } catch (error) {
+        console.error('Error fetching company profile:', error);
+        res.status(500).json({ error: 'Failed to fetch company profile' });
+    }
+}
+
 module.exports = {
     onboardSupplier,
     revokeCredential,
     getCompanies,
-    createCompany
+    createCompany,
+    getCompanyProfile
 };

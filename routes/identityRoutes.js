@@ -8,6 +8,7 @@ router.use(ensureLenderAuth);
 router.post('/onboard', identityController.onboardSupplier);
 router.post('/revoke/:companyId', identityController.revokeCredential);
 router.get('/companies', identityController.getCompanies);
+router.get('/companies/:id/profile', identityController.getCompanyProfile);
 router.post('/companies', identityController.createCompany);
 
 module.exports = router;

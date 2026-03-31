@@ -180,9 +180,85 @@ const manualOverride = async (req, res) => {
     }
 };
 
+const reEvaluateInvoice = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const lenderId = req.lenderId;
+
+        const invQuery = await pool.query('SELECT * FROM invoices WHERE id = $1 AND lender_id = $2', [id, lenderId]);
+        if (invQuery.rows.length === 0) {
+            return res.status(404).json({ error: 'Invoice not found' });
+        }
+        const invoice = invQuery.rows[0];
+
+        const fingerprint = validationService.generateFingerprint(
+            invoice.supplier_id, 
+            invoice.buyer_id, 
+            invoice.invoice_number, 
+            invoice.amount, 
+            invoice.invoice_date
+        );
+
+        let totalPoints = 0;
+        let finalBreakdown = [];
+
+        const dupCheck = await validationService.detectDuplicates(
+            lenderId, fingerprint, invoice.supplier_id, invoice.buyer_id, invoice.amount, invoice.invoice_date, invoice.invoice_number
+        );
+        if (dupCheck.isDuplicate) {
+            totalPoints += dupCheck.points;
+            finalBreakdown.push(...dupCheck.breakdown);
+        }
+
+        const tripleCheck = await validationService.checkTripleMatch(
+            lenderId, invoice.po_id, invoice.grn_id, invoice.amount, invoice.invoice_date, invoice.supplier_id, invoice.buyer_id, invoice.invoice_number
+        );
+        totalPoints += tripleCheck.points;
+        finalBreakdown.push(...tripleCheck.breakdown);
+
+        const riskResult = await riskEngineService.evaluateRisk(
+            lenderId, invoice.id, invoice.supplier_id, invoice.buyer_id, invoice.amount, invoice.invoice_date, invoice.expected_payment_date, totalPoints, finalBreakdown
+        );
+
+        res.json({
+            message: 'Invoice re-evaluated successfully',
+            status: riskResult.status,
+            riskScore: riskResult.riskScore,
+            breakdown: riskResult.breakdown
+        });
+    } catch (error) {
+        console.error('Error re-evaluating invoice:', error);
+        res.status(500).json({ error: 'Failed to re-evaluate invoice' });
+    }
+};
+
+const getInvoiceAudits = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const lenderId = req.lenderId;
+
+        const invCheck = await pool.query('SELECT id FROM invoices WHERE id = $1 AND lender_id = $2', [id, lenderId]);
+        if (invCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Invoice not found' });
+        }
+
+        const auditQuery = await pool.query(
+            'SELECT version, score, breakdown, engine_version, created_at FROM risk_score_audits WHERE invoice_id = $1 ORDER BY version DESC',
+            [id]
+        );
+
+        res.json(auditQuery.rows);
+    } catch (error) {
+        console.error('Error fetching audits:', error);
+        res.status(500).json({ error: 'Failed to fetch audit history' });
+    }
+};
+
 module.exports = {
     submitInvoice,
     getInvoiceDetails,
     preDisbursementGate,
-    manualOverride
+    manualOverride,
+    reEvaluateInvoice,
+    getInvoiceAudits
 };
