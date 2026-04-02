@@ -6,12 +6,14 @@ export function FraudSimulator() {
     const [phase, setPhase] = useState<'idle' | 'injecting' | 'catching' | 'complete'>('idle');
     const [invoicesProcessed, setInvoicesProcessed] = useState(0);
     const [targetVolume, setTargetVolume] = useState(150);
+    const [errorMsg, setErrorMsg] = useState<string | null>(null);
+    const [estimatedDurationMs, setEstimatedDurationMs] = useState<number | null>(null);
     const { data: kpi } = useKPI();
     const wsRef = useRef<WebSocket | null>(null);
 
     // Dynamic Average: Calculate real average invoice amount from current portfolio
     const avgInvoiceAmount = useMemo(() => {
-        if (!kpi || !kpi.activeInvoices || kpi.activeInvoices === 0) return 50000; // Fallback
+        if (!kpi || !kpi.activeInvoices || kpi.activeInvoices === 0) return 0;
         return kpi.totalExposure / kpi.activeInvoices;
     }, [kpi]);
 
@@ -48,6 +50,7 @@ export function FraudSimulator() {
     }, []);
 
     const startAnalysis = async () => {
+        setErrorMsg(null);
         setPhase('injecting');
         
         setTimeout(async () => {
@@ -62,10 +65,16 @@ export function FraudSimulator() {
                     body: JSON.stringify({ volume: targetVolume })
                 });
 
-                if (!response.ok) throw new Error('Backend Stress Test Failed');
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.error || 'Backend Stress Test Failed');
+                }
+                const data = await response.json();
+                setEstimatedDurationMs(Number(data.estimatedDuration || 0));
                 setPhase('catching');
             } catch (error) {
                 console.error(error);
+                setErrorMsg(error instanceof Error ? error.message : 'Stress test failed');
                 setPhase('idle');
             }
         }, 1200);
@@ -74,6 +83,8 @@ export function FraudSimulator() {
     const reset = () => {
         setPhase('idle');
         setInvoicesProcessed(0);
+        setEstimatedDurationMs(null);
+        setErrorMsg(null);
     };
 
     const totalExposurePrevented = invoicesProcessed * avgInvoiceAmount;
@@ -126,7 +137,7 @@ export function FraudSimulator() {
                             />
                         </div>
                         <div className="text-[10px] text-center text-muted-foreground uppercase tracking-widest bg-background/50 py-1.5 rounded-lg border border-border/50">
-                            Avg Risk / Unit: <span className="text-primary font-bold">{formatCurrency(avgInvoiceAmount)}</span>
+                            Avg Risk / Unit: <span className="text-primary font-bold">{avgInvoiceAmount > 0 ? formatCurrency(avgInvoiceAmount) : 'N/A'}</span>
                         </div>
                         <button
                             onClick={startAnalysis}
@@ -165,9 +176,19 @@ export function FraudSimulator() {
                         <div className="text-[10px] font-mono text-center text-primary/70 uppercase tracking-tighter">
                              Total Blocked: {formatCurrency(totalExposurePrevented)}
                         </div>
+                        {estimatedDurationMs ? (
+                            <div className="text-[10px] mt-2 font-mono text-center text-muted-foreground">
+                                Backend ETA: {(estimatedDurationMs / 1000).toFixed(1)}s
+                            </div>
+                        ) : null}
                     </div>
                 )}
             </div>
+            {errorMsg && (
+                <div className="mt-3 p-2 bg-destructive/10 border border-destructive/30 rounded-lg text-[10px] text-destructive font-mono">
+                    {errorMsg}
+                </div>
+            )}
         </div>
     );
 }

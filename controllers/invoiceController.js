@@ -2,6 +2,7 @@ const pool = require('../db/index');
 const validationService = require('../services/validationService');
 const riskEngineService = require('../services/riskEngineService');
 const graphEngineService = require('../services/graphEngineService');
+const explainabilityService = require('../services/explainabilityService');
 
 const submitInvoice = async (req, res) => {
     try {
@@ -101,7 +102,32 @@ const getInvoiceDetails = async (req, res) => {
         const { id } = req.params;
         const lenderId = req.lenderId;
 
-        const invQuery = await pool.query('SELECT * FROM invoices WHERE id = $1 AND lender_id = $2', [id, lenderId]);
+        const invQuery = await pool.query(
+            `
+            SELECT i.*, 
+                   po.goods_category AS po_description, 
+                   grn.amount_received AS grn_amount,
+                   e.fraud_dna,
+                   e.counterfactual,
+                   e.impatience_signal,
+                   sup.name AS supplier_name,
+                   buy.name AS buyer_name
+            FROM invoices i
+            LEFT JOIN purchase_orders po ON i.po_id = po.id
+            LEFT JOIN goods_receipts grn ON i.grn_id = grn.id
+            LEFT JOIN companies sup ON sup.id = i.supplier_id
+            LEFT JOIN companies buy ON buy.id = i.buyer_id
+            LEFT JOIN LATERAL (
+                SELECT fraud_dna, counterfactual, impatience_signal
+                FROM explanations
+                WHERE invoice_id = i.id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) e ON true
+            WHERE i.id = $1 AND i.lender_id = $2
+        `,
+            [id, lenderId]
+        );
 
         if (invQuery.rows.length === 0) {
             return res.status(404).json({ error: 'Invoice not found or access denied' });
@@ -109,13 +135,45 @@ const getInvoiceDetails = async (req, res) => {
 
         const invoice = invQuery.rows[0];
 
-        // Fetch audit history breakdown
+        // Fetch audit history breakdown (JSONB may arrive as object or string)
         const auditQuery = await pool.query('SELECT breakdown FROM risk_score_audits WHERE invoice_id = $1 ORDER BY created_at DESC LIMIT 1', [id]);
-        const breakdown = auditQuery.rows.length > 0 ? auditQuery.rows[0].breakdown : [];
+        let breakdown = auditQuery.rows.length > 0 ? auditQuery.rows[0].breakdown : [];
+        if (typeof breakdown === 'string') {
+            try {
+                breakdown = JSON.parse(breakdown);
+            } catch {
+                breakdown = [];
+            }
+        }
+        if (!Array.isArray(breakdown)) breakdown = [];
+
+        // DNA: prefer persisted explanation; always derive when missing so APPROVED/clean invoices still show a profile
+        let fraudDNA = invoice.fraud_dna;
+        if (typeof fraudDNA === 'string') {
+            try {
+                fraudDNA = JSON.parse(fraudDNA);
+            } catch {
+                fraudDNA = null;
+            }
+        }
+        if (!fraudDNA) {
+            fraudDNA = explainabilityService.classifyFraudDNA(breakdown);
+        }
+
+        const grnDesc =
+            invoice.grn_amount != null
+                ? `Goods receipt — amount received: ${invoice.grn_amount} (aligned to PO line items where applicable)`
+                : null;
 
         res.json({
             ...invoice,
-            breakdown
+            breakdown,
+            fraudDNA,
+            semanticData: {
+                invoiceDescription: invoice.goods_category || '',
+                poDescription: invoice.po_description || '',
+                grnDescription: grnDesc || ''
+            }
         });
 
     } catch (error) {
@@ -203,7 +261,7 @@ const reEvaluateInvoice = async (req, res) => {
         let finalBreakdown = [];
 
         const dupCheck = await validationService.detectDuplicates(
-            lenderId, fingerprint, invoice.supplier_id, invoice.buyer_id, invoice.amount, invoice.invoice_date, invoice.invoice_number
+            lenderId, fingerprint, invoice.supplier_id, invoice.buyer_id, invoice.amount, invoice.invoice_date, invoice.invoice_number, invoice.id
         );
         if (dupCheck.isDuplicate) {
             totalPoints += dupCheck.points;

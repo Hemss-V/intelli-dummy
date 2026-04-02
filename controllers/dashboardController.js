@@ -44,7 +44,13 @@ const getPortfolio = async (req, res) => {
         }
 
         const invQuery = await pool.query(
-            'SELECT id, invoice_number, supplier_id, buyer_id, amount, invoice_date, status, risk_score FROM invoices WHERE lender_id = $1 ORDER BY invoice_date DESC',
+            `SELECT i.id, i.invoice_number, i.supplier_id, i.buyer_id, i.amount, i.invoice_date, i.status, i.risk_score,
+                    s.name AS supplier_name, b.name AS buyer_name
+             FROM invoices i
+             LEFT JOIN companies s ON s.id = i.supplier_id
+             LEFT JOIN companies b ON b.id = i.buyer_id
+             WHERE i.lender_id = $1
+             ORDER BY i.invoice_date DESC`,
             [lenderIdFromAuth]
         );
 

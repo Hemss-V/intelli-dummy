@@ -279,8 +279,17 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
     if (status === 'BLOCKED') recommendation = 'BLOCK_DISBURSEMENT';
     else if (status === 'REVIEW') recommendation = 'MANUAL_REVIEW_REQUIRED';
 
+    // Manual lender approval: keep gate open even if model score is high (audit still records true score)
+    const manualOverrideRes = await pool.query('SELECT 1 FROM manual_overrides WHERE invoice_id = $1 LIMIT 1', [invoiceId]);
+    const hasManualOverride = manualOverrideRes.rows.length > 0;
+    let statusToPersist = status;
+    if (hasManualOverride) {
+        statusToPersist = 'APPROVED';
+        recommendation = 'APPROVE_DISBURSEMENT';
+    }
+
     // Persist Updates
-    await pool.query('UPDATE invoices SET status = $1, risk_score = $2 WHERE id = $3', [status, totalScore, invoiceId]);
+    await pool.query('UPDATE invoices SET status = $1, risk_score = $2 WHERE id = $3', [statusToPersist, totalScore, invoiceId]);
 
     if (supplier) {
         await pool.query('UPDATE companies SET last_invoice_date = $1 WHERE id = $2', [invDateObj, supplierId]);
@@ -294,7 +303,7 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
         [invoiceId, totalScore, JSON.stringify(finalBreakdown), nextVersion, 'v1']
     );
 
-    if (status !== 'APPROVED') {
+    if (!hasManualOverride && statusToPersist !== 'APPROVED') {
         const primaryFactor = finalBreakdown.length > 0 ? finalBreakdown[0].factor : 'unknown';
         const contagionVolume = await graphEngineService.calculateContagionScore(supplierId);
         
@@ -319,15 +328,21 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
 
     const result = {
         invoiceId,
-        status,
+        status: statusToPersist,
         riskScore: totalScore,
         breakdown: finalBreakdown,
-        recommendation
+        recommendation,
+        engineSuggestedStatus: status,
+        manualOverrideApplied: hasManualOverride
     };
 
-    // Fire and forget — don't await
-    explainabilityService.generateExplanation(invoiceId, result)
-        .catch(err => console.error('Explanation save failed:', err));
+    // Ensure DNA/explanations are persisted before returning,
+    // so the Verification Center drawer refresh shows the updated Fraud DNA immediately.
+    try {
+        await explainabilityService.generateExplanation(invoiceId, result);
+    } catch (err) {
+        console.error('Explanation save failed:', err);
+    }
 
     return result;
 };

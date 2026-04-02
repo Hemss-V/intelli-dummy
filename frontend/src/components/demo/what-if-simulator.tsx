@@ -1,15 +1,60 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { HelpCircle, ArrowRight, ShieldAlert, ShieldCheck } from "lucide-react";
+import {
+    useContagionImpact,
+    useInvoiceDetail,
+    useInvoiceQueue,
+    useKPI,
+    useManualOverrideInvoice
+} from "@/hooks/use-dashboard-data";
 
 export function WhatIfSimulator() {
     const [isApproved, setIsApproved] = useState(false);
-    const [fundAmount, setFundAmount] = useState(250000);
+    const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+    const [fundAmount, setFundAmount] = useState(0);
 
-    const baseHealth = 85.0;
+    const { data: queue, isLoading: queueLoading } = useInvoiceQueue();
+    const { data: kpi } = useKPI();
+    const { data: invoiceDetail } = useInvoiceDetail(selectedInvoiceId);
+    const { data: contagion } = useContagionImpact(invoiceDetail?.supplier_id ? String(invoiceDetail.supplier_id) : null);
+    const overrideMutation = useManualOverrideInvoice();
 
-    // Deterministic drop based on the input amount
-    const dropPercentage = Math.min((fundAmount / 20000) * 1.5, 60.0);
-    const calculatedHealth = isApproved ? Math.max(baseHealth - dropPercentage, 12.5).toFixed(1) : baseHealth.toFixed(1);
+    useEffect(() => {
+        if (!queue || queue.length === 0) return;
+        if (selectedInvoiceId) return;
+        const preferred = queue.find((q: any) => q.status === "BLOCKED" || q.status === "REVIEW");
+        setSelectedInvoiceId(String((preferred || queue[0]).dbId));
+    }, [queue, selectedInvoiceId]);
+
+    useEffect(() => {
+        if (!invoiceDetail?.amount) return;
+        setFundAmount(Number(invoiceDetail.amount));
+    }, [invoiceDetail?.id]);
+
+    const selectedQueueInvoice = useMemo(
+        () => queue?.find((q: any) => String(q.dbId) === String(selectedInvoiceId)),
+        [queue, selectedInvoiceId]
+    );
+
+    const baseHealth = Number(kpi?.healthScore ?? 0);
+    const contagionScore = Number(contagion?.contagionRiskScore ?? 0);
+    const lenderExposure = Math.max(1, Number(kpi?.totalExposure ?? 0));
+    const sizeImpact = Math.min(35, (fundAmount / lenderExposure) * 100);
+    const contagionImpact = contagionScore * 0.35;
+    const dropPercentage = Math.min(60, sizeImpact + contagionImpact);
+    const calculatedHealth = isApproved ? Math.max(baseHealth - dropPercentage, 0).toFixed(1) : baseHealth.toFixed(1);
+
+    const canOverride =
+        !!selectedInvoiceId &&
+        (selectedQueueInvoice?.status === "BLOCKED" || selectedQueueInvoice?.status === "REVIEW");
+
+    const handleOverride = async () => {
+        if (!selectedInvoiceId || !canOverride) return;
+        await overrideMutation.mutateAsync({
+            id: selectedInvoiceId,
+            reason: `Dashboard simulation override. Exposure amount considered: ₹${Math.round(fundAmount)}`
+        });
+    };
 
     return (
         <div className="bg-card rounded-2xl p-6 glow-card border border-border/50 h-full flex flex-col relative overflow-hidden transition-colors duration-500">
@@ -28,7 +73,22 @@ export function WhatIfSimulator() {
             <div className="grid grid-cols-2 gap-3 mb-4 shrink-0 relative z-10">
                 <div>
                     <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block mb-1">Target Invoice</label>
-                    <input type="text" defaultValue="INV-8001" className="w-full bg-muted/50 border border-border rounded-lg px-3 py-1.5 text-xs text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary" />
+                    <select
+                        value={selectedInvoiceId || ""}
+                        onChange={(e) => setSelectedInvoiceId(e.target.value || null)}
+                        className="w-full bg-muted/50 border border-border rounded-lg px-3 py-1.5 text-xs text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                        disabled={queueLoading || !queue?.length}
+                    >
+                        {!queue?.length ? (
+                            <option value="">No invoices</option>
+                        ) : (
+                            queue.map((inv: any) => (
+                                <option key={inv.dbId} value={String(inv.dbId)}>
+                                    {inv.id} ({inv.status})
+                                </option>
+                            ))
+                        )}
+                    </select>
                 </div>
                 <div>
                     <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block mb-1">Exposure Amount (INR)</label>
@@ -84,10 +144,25 @@ export function WhatIfSimulator() {
                 <div className={`p-3 rounded-xl border transition-all duration-500 ${isApproved ? 'bg-destructive/5 border-destructive/30' : 'bg-primary/5 border-primary/20'}`}>
                     <p className="text-xs text-muted-foreground leading-relaxed">
                         {isApproved
-                            ? `Overriding this block injects ₹${fundAmount.toLocaleString('en-IN')} capital into a designated high-risk entity. Modeler predicts a ${dropPercentage.toFixed(1)}% drop in network health.`
-                            : "Keeping the block maintains the network firewall. System health evaluates optimally without contagion risk from the designated account."}
+                            ? `Override simulation for ${selectedQueueInvoice?.id || 'selected invoice'}: ₹${fundAmount.toLocaleString('en-IN')} disbursal with contagion score ${contagionScore} implies a projected ${dropPercentage.toFixed(1)}% health drop.`
+                            : "Keeping the block preserves lender health and avoids contagion spread from the selected account."}
                     </p>
                 </div>
+                {isApproved && (
+                    <button
+                        onClick={handleOverride}
+                        disabled={!canOverride || overrideMutation.isPending}
+                        className="w-full py-2 rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-xs font-bold uppercase tracking-wider hover:bg-destructive/20 disabled:opacity-50"
+                    >
+                        {overrideMutation.isPending ? "Applying Override..." : "Apply Override In Backend"}
+                    </button>
+                )}
+                {overrideMutation.isSuccess && (
+                    <div className="text-[10px] text-primary font-mono">Override applied. Queue/KPI refreshed from backend.</div>
+                )}
+                {overrideMutation.error && (
+                    <div className="text-[10px] text-destructive font-mono">{(overrideMutation.error as Error).message}</div>
+                )}
             </div>
         </div>
     );

@@ -237,11 +237,11 @@ export function useInvoiceQueue() {
       return invoices.map((inv: any) => ({
         dbId: inv.id,
         id: inv.invoice_number,
-        supplier: "Supplier ID: " + (inv.supplier_id || '?'),
+        supplier: inv.supplier_name || `Supplier ID: ${inv.supplier_id ?? "?"}`,
         amount: parseFloat(inv.amount),
         date: inv.invoice_date,
         status: inv.status,
-        riskScore: inv.risk_score || 0
+        riskScore: inv.risk_score ?? 0
       }));
     },
     refetchInterval: 5000
@@ -275,11 +275,16 @@ export function useReEvaluateInvoice() {
       return await res.json();
     },
     onSuccess: (_, id) => {
+      // Precise invalidation so the currently open invoice drawer refetches immediately.
       queryClient.invalidateQueries({ queryKey: ["invoice-detail", id, lenderId] });
       queryClient.invalidateQueries({ queryKey: ["invoice-audits", id, lenderId] });
       queryClient.invalidateQueries({ queryKey: ["invoice-queue", lenderId] });
       queryClient.invalidateQueries({ queryKey: ["kpi", lenderId] });
     },
+    onError: (err) => {
+      // Keep it simple: UI component will also read from console.
+      console.error('Re-evaluate invoice failed:', err);
+    }
   });
 }
 
@@ -340,6 +345,32 @@ export function useScenarios() {
       const res = await fetch(`${API_BASE}/scenarios`, { headers: getHeaders() });
       if (!res.ok) throw new Error('Failed to fetch scenarios');
       return await res.json();
+    },
+  });
+}
+
+export function useManualOverrideInvoice() {
+  const queryClient = useQueryClient();
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+
+  return useMutation({
+    mutationFn: async ({ id, reason }: { id: string; reason: string }) => {
+      const res = await fetch(`${API_BASE}/invoices/${id}/override`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ reason, auditorId: 'dashboard_simulator' }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to override invoice');
+      }
+      return await res.json();
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["invoice-detail", vars.id, lenderId] });
+      queryClient.invalidateQueries({ queryKey: ["invoice-queue", lenderId] });
+      queryClient.invalidateQueries({ queryKey: ["kpi", lenderId] });
+      queryClient.invalidateQueries({ queryKey: ["alerts", lenderId] });
     },
   });
 }

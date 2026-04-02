@@ -33,11 +33,20 @@ function detectImpatienceSignal(breakdown) {
 }
 
 function classifyFraudDNA(breakdown) {
+    if (!breakdown || breakdown.length === 0) {
+        return {
+            typology: 'LOW_RISK_PROFILE',
+            confidence: 88,
+            evidence: ['No fraud-rule factors fired in the latest risk audit.'],
+            action: 'Continue standard monitoring; re-run scoring after material document changes.'
+        };
+    }
+
     const factors = breakdown.map(b => b.factor);
 
     let typology = "UNKNOWN_PATTERN";
     let confidence = 50;
-    let evidence = breakdown.map(b => b.detail).slice(0, 3);
+    let evidence = breakdown.map(b => b.detail).filter(Boolean).slice(0, 5);
     let action = "Manual review recommended";
 
     if (factors.includes('exact_duplicate') || factors.includes('fuzzy_duplicate')) {
@@ -77,6 +86,7 @@ async function generateExplanation(invoiceId, riskResult) {
         const impatienceSignal = detectImpatienceSignal(breakdown);
         const fraudDNA = classifyFraudDNA(breakdown);
 
+        await pool.query('DELETE FROM explanations WHERE invoice_id = $1', [invoiceId]);
         await pool.query(
             `INSERT INTO explanations (invoice_id, factor_breakdown, counterfactual, impatience_signal, fraud_dna) 
              VALUES ($1, $2, $3, $4, $5)`,

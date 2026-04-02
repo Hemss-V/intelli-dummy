@@ -12,21 +12,35 @@ const formatCurrency = (value: number) => {
     }).format(value);
 };
 
-export function InvoiceQueue() {
+export function InvoiceQueue({ onSelectInvoice }: { onSelectInvoice?: (dbId: number | null) => void }) {
     const { data: queue, isLoading } = useInvoiceQueue();
     const [searchTerm, setSearchTerm] = useState("");
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [selectedDbId, setSelectedDbId] = useState<number | null>(null);
     const [showHistory, setShowHistory] = useState(false);
+    const [recalcError, setRecalcError] = useState<string | null>(null);
     
     const { data: details, isLoading: isLoadingDetails, error } = useInvoiceDetail(selectedDbId ? String(selectedDbId) : null);
     const { data: audits, isLoading: isLoadingAudits } = useInvoiceAudits(selectedDbId ? String(selectedDbId) : null);
     const reEvaluate = useReEvaluateInvoice();
 
+    const handleSelect = (id: string, dbId: number) => {
+        setSelectedId(id);
+        setSelectedDbId(dbId);
+        setShowHistory(false);
+        setRecalcError(null);
+        if (onSelectInvoice) onSelectInvoice(dbId);
+    };
+
     const handleReEvaluate = async (e: React.MouseEvent) => {
         e.stopPropagation();
         if (selectedDbId) {
-            await reEvaluate.mutateAsync(String(selectedDbId));
+            setRecalcError(null);
+            try {
+                await reEvaluate.mutateAsync(String(selectedDbId));
+            } catch (err) {
+                setRecalcError(err instanceof Error ? err.message : 'Recalculation failed');
+            }
         }
     };
 
@@ -77,12 +91,8 @@ export function InvoiceQueue() {
                     <tbody>
                         {filteredQueue.map((invoice, idx) => (
                             <tr
-                                key={invoice.id}
-                                onClick={() => {
-                                    setSelectedId(invoice.id);
-                                    setSelectedDbId(invoice.dbId);
-                                    setShowHistory(false);
-                                }}
+                                key={invoice.dbId}
+                                onClick={() => handleSelect(invoice.id, invoice.dbId)}
                                 className={`border-b border-border/50 hover:bg-muted/30 cursor-pointer transition-colors ${idx % 2 === 0 ? 'bg-background/20' : ''} ${selectedId === invoice.id ? 'bg-primary/5 border-l-2 border-l-primary' : ''}`}
                             >
                                 <td className="px-6 py-4 font-mono font-medium text-foreground">
@@ -105,7 +115,7 @@ export function InvoiceQueue() {
                                 <td className="px-6 py-4">
                                     <span className={`px-2.5 py-1 rounded-full text-xs font-medium uppercase tracking-wider border ${invoice.status === 'APPROVED' ? 'bg-primary/10 text-primary border-primary/20' :
                                             invoice.status === 'BLOCKED' ? 'bg-destructive/10 text-destructive border-destructive/20' :
-                                                invoice.status === 'UNDER REVIEW' ? 'bg-warning/10 text-warning border-warning/20' :
+                                                invoice.status === 'REVIEW' ? 'bg-warning/10 text-warning border-warning/20' :
                                                     'bg-muted text-muted-foreground border-border'
                                         }`}>
                                         {invoice.status}
@@ -153,6 +163,11 @@ export function InvoiceQueue() {
                             </button>
                         </div>
                     </div>
+                    {recalcError && !showHistory && (
+                        <div className="mx-4 mt-3 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs font-mono">
+                            {recalcError}
+                        </div>
+                    )}
 
                     <div className="flex-1 overflow-auto p-4 space-y-6 custom-scrollbar text-foreground">
                         {isLoadingDetails || (showHistory && isLoadingAudits) ? (

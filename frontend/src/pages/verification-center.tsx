@@ -1,10 +1,15 @@
+import { useState } from "react";
 import { SemanticComparison } from "@/components/dashboard/semantic-comparison";
 import { FraudDnaCard } from "@/components/dashboard/fraud-dna-card";
 import { InvoiceQueue } from "@/components/dashboard/invoice-queue";
 import { ExpandableWrapper } from "@/components/ui/expandable-wrapper";
+import { useInvoiceDetail } from "@/hooks/use-dashboard-data";
 import { ShieldCheck } from "lucide-react";
 
 export default function VerificationCenterPage() {
+    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const { data: details, isLoading } = useInvoiceDetail(selectedId);
+
     return (
         <div className="flex-1 overflow-auto bg-transparent p-4 md:p-8 custom-scrollbar flex flex-col space-y-8">
             {/* Header */}
@@ -22,12 +27,22 @@ export default function VerificationCenterPage() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="min-h-[400px] h-full">
                     <ExpandableWrapper>
-                        <FraudDnaCard />
+                        <FraudDnaCard
+                            dna={details?.fraudDNA}
+                            isLoading={isLoading}
+                            breakdown={details?.breakdown}
+                            hasSelection={!!selectedId}
+                        />
                     </ExpandableWrapper>
                 </div>
                 <div className="min-h-[400px] h-full">
                     <ExpandableWrapper>
-                        <SemanticComparison />
+                        <SemanticComparison
+                            data={details?.semanticData}
+                            isLoading={isLoading}
+                            breakdown={details?.breakdown}
+                            hasSelection={!!selectedId}
+                        />
                     </ExpandableWrapper>
                 </div>
             </div>
@@ -35,7 +50,7 @@ export default function VerificationCenterPage() {
             {/* Queue */}
             <div className="pb-8">
                 <div className="min-h-[500px] h-[70vh]">
-                    <InvoiceQueue />
+                    <InvoiceQueue onSelectInvoice={(id) => setSelectedId(id ? String(id) : null)} />
                 </div>
             </div>
         </div>

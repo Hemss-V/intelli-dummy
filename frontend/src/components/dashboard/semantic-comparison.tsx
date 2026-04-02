@@ -1,6 +1,32 @@
-import { FileText, Cpu, AlertTriangle } from "lucide-react";
+import { FileText, Cpu, AlertTriangle, RefreshCcw } from "lucide-react";
 
-export function SemanticComparison() {
+interface SemanticComparisonProps {
+    data?: {
+        invoiceDescription: string;
+        poDescription: string;
+        grnDescription: string;
+    } | null;
+    isLoading?: boolean;
+    breakdown?: any[];
+    /** When false, show “select an invoice” empty state */
+    hasSelection?: boolean;
+}
+
+export function SemanticComparison({ data, isLoading, breakdown, hasSelection = false }: SemanticComparisonProps) {
+    const semanticMismatch = breakdown?.find(
+        (b) =>
+            b.factor === "semantic_mismatch" ||
+            b.factor === "vague_description" ||
+            b.factor === "templated_invoices"
+    );
+
+    const mismatchDetail = semanticMismatch?.detail as string | undefined;
+
+    const isEmptyDoc =
+        !data?.invoiceDescription?.trim() &&
+        !data?.poDescription?.trim() &&
+        !data?.grnDescription?.trim();
+
     return (
         <div className="bg-card rounded-2xl p-6 glow-card border border-warning/30 h-full flex flex-col">
             <div className="flex items-center justify-between mb-6">
@@ -9,44 +35,76 @@ export function SemanticComparison() {
                         <Cpu className="w-5 h-5 text-warning" />
                         Semantic Verification
                     </h2>
-                    <p className="text-sm text-muted-foreground mt-1">AI Document Consistency Check</p>
+                    <p className="text-sm text-muted-foreground mt-1">PO / invoice / GRN text used in the risk engine semantic layer</p>
                 </div>
-                <div className="px-3 py-1 bg-warning/10 border border-warning/20 text-warning text-xs font-bold rounded-full flex items-center gap-2">
-                    <AlertTriangle className="w-3 h-3" />
-                    Mismatch Detected
-                </div>
+                {isLoading ? (
+                    <RefreshCcw className="w-4 h-4 text-warning animate-spin" />
+                ) : semanticMismatch ? (
+                    <div className="px-3 py-1 bg-warning/10 border border-warning/20 text-warning text-xs font-bold rounded-full flex items-center gap-2">
+                        <AlertTriangle className="w-3 h-3" />
+                        Flagged
+                    </div>
+                ) : hasSelection && !isEmptyDoc ? (
+                    <div className="px-3 py-1 bg-primary/10 border border-primary/20 text-primary text-xs font-bold rounded-full">
+                        No semantic flags
+                    </div>
+                ) : null}
             </div>
 
-            <div className="flex-1 grid grid-cols-2 gap-4">
-                {/* Left Doc */}
-                <div className="bg-background/50 border border-border/50 rounded-xl p-4 flex flex-col">
-                    <div className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-border/50 pb-2">
-                        <FileText className="w-3 h-3" /> Root PO #1002
-                    </div>
-                    <div className="text-sm text-foreground/80 font-mono leading-relaxed mt-2 flex-1 relative z-0">
-                        "Supply of <span className="bg-primary/20 text-primary px-1 rounded">High-grade Industrial Steel Tubes (Spec 44-B)</span> for structural reinforcement."
-                    </div>
+            {!hasSelection ? (
+                <div className="flex-1 flex items-center justify-center p-6 text-center text-sm text-muted-foreground border border-dashed border-border/60 rounded-xl">
+                    Select an invoice in the queue to load PO, invoice, and GRN fields from the database.
                 </div>
-
-                {/* Right Doc */}
-                <div className="bg-warning/5 border border-warning/30 rounded-xl p-4 flex flex-col relative">
-                    <div className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-border/50 pb-2">
-                        <FileText className="w-3 h-3 text-warning" /> Invoice #841
+            ) : (
+                <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-background/50 border border-border/50 rounded-xl p-4 flex flex-col min-h-[120px]">
+                        <div className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-border/50 pb-2">
+                            <FileText className="w-3 h-3" /> Purchase Order
+                        </div>
+                        <div className="text-[11px] text-foreground/80 font-mono leading-relaxed mt-2 flex-1 break-words">
+                            {data?.poDescription?.trim() ? `"${data.poDescription}"` : "— No goods category on linked PO —"}
+                        </div>
                     </div>
-                    <div className="text-sm text-foreground/80 font-mono leading-relaxed mt-2 flex-1 relative z-10">
-                        "Services rendered and <div className="inline-block relative group">
-                            <span className="bg-warning/20 text-warning px-1 rounded border-b border-warning border-dashed cursor-help">assorted metal scrap</span>
-                            <div className="absolute top-full left-0 mt-2 w-56 bg-card border border-border rounded-lg p-3 text-xs text-foreground shadow-xl hidden group-hover:block z-50">
-                                <span className="text-warning font-bold mb-1 block">LLM Flag:</span> Vague description 'assorted metal scrap' semantically contradicts specific PO goods 'high-grade steel tubes'.
+
+                    <div
+                        className={`rounded-xl p-4 flex flex-col min-h-[120px] relative ${
+                            semanticMismatch ? "bg-warning/5 border border-warning/30" : "bg-background/50 border border-border/50"
+                        }`}
+                    >
+                        <div className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-border/50 pb-2">
+                            <FileText className={`w-3 h-3 ${semanticMismatch ? "text-warning" : ""}`} /> Invoice
+                        </div>
+                        <div className="text-[11px] text-foreground/80 font-mono leading-relaxed mt-2 flex-1 break-words">
+                            {data?.invoiceDescription?.trim() ? `"${data.invoiceDescription}"` : "— No goods category on invoice —"}
+                        </div>
+                        {semanticMismatch && mismatchDetail && (
+                            <div className="mt-2 p-2 bg-warning/10 rounded border border-warning/20 text-[10px] text-warning">
+                                {mismatchDetail}
                             </div>
-                        </div> material."
+                        )}
+                    </div>
+
+                    <div className="bg-background/50 border border-border/50 rounded-xl p-4 flex flex-col min-h-[120px]">
+                        <div className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-border/50 pb-2">
+                            <FileText className="w-3 h-3" /> Goods receipt
+                        </div>
+                        <div className="text-[11px] text-foreground/80 font-mono leading-relaxed mt-2 flex-1 break-words">
+                            {data?.grnDescription?.trim()
+                                ? `"${data.grnDescription}"`
+                                : "— No receipt amount on linked GRN —"}
+                        </div>
                     </div>
                 </div>
-            </div>
+            )}
 
             <div className="mt-4 p-3 bg-muted/20 border border-border/50 rounded-lg text-xs leading-relaxed text-muted-foreground">
-                <span className="font-bold text-warning">Reasoning:</span> The invoice description is unusually vague and implies lower-grade materials compared to the precise specification in the Root PO. This is a common indicator of a Phantom Invoice.
+                <span className="font-bold text-warning mr-1">How this is used:</span>
+                {semanticMismatch
+                    ? `The risk engine recorded factor "${String(semanticMismatch.factor).replace(/_/g, " ")}". Descriptions above are loaded from your PO, invoice, and GRN rows (not hardcoded).`
+                    : hasSelection
+                      ? "The semantic layer runs at scoring time (Gemini, when configured). Matching text here reduces phantom-invoice signals; empty fields limit what the model can compare."
+                      : "Choose an invoice to inspect stored document text."}
             </div>
         </div>
-    )
+    );
 }

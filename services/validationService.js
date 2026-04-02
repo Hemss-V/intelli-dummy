@@ -77,19 +77,24 @@ const checkTripleMatch = async (lenderId, poId, grnId, invoiceAmount, invoiceDat
     return { valid: penaltyPoints === 0, points: penaltyPoints, breakdown };
 };
 
-const detectDuplicates = async (lenderId, fingerprint, supplierId, buyerId, amount, invoiceDate, invoiceNumber) => {
+const detectDuplicates = async (lenderId, fingerprint, supplierId, buyerId, amount, invoiceDate, invoiceNumber, excludeInvoiceId = null) => {
     const breakdown = [];
     let penaltyPoints = 0;
     let duplicateOf = null;
 
     // 1. Exact Duplicate (Cross-lender via fingerprint)
     // NOTE: We intentionally do NOT filter by lenderId here (Feature 12)
-    const exactCheck = await pool.query(`
-        SELECT f.lender_id, i.invoice_number 
+    // excludeInvoiceId: when re-evaluating, the current row's fingerprint must not match itself
+    const exactCheck = await pool.query(
+        `
+        SELECT f.lender_id, i.invoice_number, f.invoice_id
         FROM invoice_fingerprints f
         JOIN invoices i ON f.invoice_id = i.id
         WHERE f.fingerprint = $1
-    `, [fingerprint]);
+          AND ($2::integer IS NULL OR f.invoice_id <> $2)
+    `,
+        [fingerprint, excludeInvoiceId]
+    );
 
     if (exactCheck.rows.length > 0) {
         const match = exactCheck.rows[0];
@@ -104,7 +109,8 @@ const detectDuplicates = async (lenderId, fingerprint, supplierId, buyerId, amou
     }
 
     // 2. Fuzzy Duplicate (Cross-lender, same parties, exact amount, date ±3d, diff invoice_number)
-    const fuzzyCheck = await pool.query(`
+    const fuzzyCheck = await pool.query(
+        `
         SELECT invoice_number FROM invoices 
         WHERE supplier_id = $1
         AND buyer_id = $2
@@ -112,7 +118,10 @@ const detectDuplicates = async (lenderId, fingerprint, supplierId, buyerId, amou
         AND invoice_date >= (CAST($4 AS TIMESTAMP) - INTERVAL '3 days')
         AND invoice_date <= (CAST($4 AS TIMESTAMP) + INTERVAL '3 days')
         AND invoice_number != $5
-    `, [supplierId, buyerId, amount, invoiceDate, invoiceNumber]);
+        AND ($6::integer IS NULL OR id <> $6)
+    `,
+        [supplierId, buyerId, amount, invoiceDate, invoiceNumber, excludeInvoiceId]
+    );
 
     if (fuzzyCheck.rows.length > 0) {
         duplicateOf = fuzzyCheck.rows[0].invoice_number;

@@ -24,9 +24,11 @@ const verifyDocumentConsistency = async (invoice, po, grn) => {
     const response = await llmService.generateContent(prompt, cacheKey);
 
     try {
-        return JSON.parse(response);
+        const trimmed = String(response).trim();
+        const jsonBlock = trimmed.match(/\{[\s\S]*\}/);
+        return JSON.parse(jsonBlock ? jsonBlock[0] : trimmed);
     } catch (e) {
-        return { isConsistent: true, mismatchReason: 'Analysis pending', riskPoints: 0 };
+        return { isConsistent: true, mismatchReason: 'LLM response not valid JSON; skipped penalty', riskPoints: 0 };
     }
 };
 
@@ -42,7 +44,9 @@ const checkVagueDescriptions = async (text) => {
 
     const response = await llmService.generateContent(prompt, `vague-${text}`);
     try {
-        return JSON.parse(response);
+        const trimmed = String(response).trim();
+        const jsonBlock = trimmed.match(/\{[\s\S]*\}/);
+        return JSON.parse(jsonBlock ? jsonBlock[0] : trimmed);
     } catch (e) {
         return { isVague: false, points: 0 };
     }
@@ -70,7 +74,9 @@ const analyzeSupplierSimilarity = async (supplierId) => {
 
     const response = await llmService.generateContent(prompt, `similarity-${supplierId}`);
     try {
-        return JSON.parse(response);
+        const trimmed = String(response).trim();
+        const jsonBlock = trimmed.match(/\{[\s\S]*\}/);
+        return JSON.parse(jsonBlock ? jsonBlock[0] : trimmed);
     } catch (e) {
         return { isSuspicious: false, points: 0 };
     }
