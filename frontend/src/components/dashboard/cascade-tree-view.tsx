@@ -1,4 +1,6 @@
+import { useMemo, useState, useEffect } from "react";
 import { GitMerge, Layers, ShieldAlert, CheckCircle2 } from "lucide-react";
+import { useCascadeExposure, usePos } from "@/hooks/use-dashboard-data";
 
 const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-IN', {
@@ -9,46 +11,44 @@ const formatCurrency = (value: number) => {
     }).format(value);
 };
 
-// Mock hierarchical cascade data
-const CASCADE_DATA = [
-    {
-        id: "T1-PO-1002", tier: "T1", entity: "Anchor Corp", type: "Root PO",
-        amount: 1000000, risk: "low", status: "VERIFIED",
-        children: [
-            {
-                id: "T2-INV-841", tier: "T2", entity: "Supplier Alpha", type: "Invoice",
-                amount: 500000, risk: "low", status: "VERIFIED",
-                children: [
-                    { id: "T3-INV-22", tier: "T3", entity: "Sub-supplier X", type: "Invoice", amount: 200000, risk: "medium", status: "VERIFIED" }
-                ]
-            },
-            {
-                id: "T2-INV-842", tier: "T2", entity: "Supplier Beta", type: "Invoice",
-                amount: 650000, risk: "high", status: "FLAGGED",
-                children: [
-                    { id: "T3-INV-99", tier: "T3", entity: "Sub-supplier Y", type: "Invoice", amount: 400000, risk: "critical", status: "BLOCKED" },
-                    { id: "T3-INV-100", tier: "T3", entity: "Sub-supplier Z", type: "Invoice", amount: 300000, risk: "critical", status: "BLOCKED" }
-                ]
-            }
-        ]
-    }
-];
-
 export function CascadeTreeView() {
-    const root = CASCADE_DATA[0];
+    const { data: pos } = usePos();
+    const [rootPoId, setRootPoId] = useState<string | number | null>(null);
 
-    // Quick recursive sum logic for total exposure
-    const computeExposure = (node: any): number => {
-        const childSum = node.children ? node.children.reduce((acc: number, c: any) => acc + computeExposure(c), 0) : 0;
-        return node.amount + childSum;
-    };
-    const totalFinanced = root.children.reduce((acc: number, c: any) => acc + computeExposure(c), 0);
-    const rootAmount = root.amount;
-    const Ratio = (totalFinanced / rootAmount);
+    useEffect(() => {
+        if (pos?.length && rootPoId == null) {
+            setRootPoId(pos[0].id);
+        }
+    }, [pos, rootPoId]);
+
+    const { data: cascade, isLoading } = useCascadeExposure(rootPoId);
+
+    const nodes = useMemo(() => {
+        const rows = cascade?.tiers || [];
+        if (!rows.length) return [];
+        return rows.map((row: any) => ({
+            id: `PO-${row.id}`,
+            rawId: Number(row.id),
+            parentRawId: row.root_po_id ? Number(row.root_po_id) : null,
+            tier: `T${row.tier_level}`,
+            entity: row.supplier_name || `Supplier ${row.supplier_id}`,
+            type: row.tier_level === 1 ? "Root PO" : "Linked PO",
+            amount: Number(row.amount || 0),
+            risk: Number(cascade?.ratio || 0) > 1.1 && row.tier_level > 1 ? "high" : "low",
+            status: Number(cascade?.ratio || 0) > 1.1 && row.tier_level > 1 ? "FLAGGED" : "VERIFIED",
+            depth: Number(row.tier_level || 1)
+        }));
+    }, [cascade]);
+
+    const root = nodes[0];
+    const totalFinanced = Number(cascade?.totalFinanced || 0);
+    const rootAmount = Number(cascade?.rootAmount || 0);
+    const Ratio = Number(cascade?.ratio || 0);
 
     const renderNode = (node: any, depth = 0) => {
         const isCritical = node.risk === 'critical' || node.risk === 'high';
-        const hasChildren = node.children && node.children.length > 0;
+        const children = nodes.filter((n: any) => n.parentRawId === node.rawId);
+        const hasChildren = children.length > 0;
 
         return (
             <div key={node.id} className="w-full">
@@ -90,7 +90,7 @@ export function CascadeTreeView() {
 
                 {hasChildren && (
                     <div className="pl-6 border-l border-border relative ml-3 mt-1 pb-1">
-                        {node.children.map((child: any) => renderNode(child, depth + 1))}
+                        {children.map((child: any) => renderNode(child, depth + 1))}
                     </div>
                 )}
             </div>
@@ -99,7 +99,7 @@ export function CascadeTreeView() {
 
     return (
         <div className="bg-card rounded-2xl p-6 glow-card border border-border/50 h-full flex flex-col">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
                 <div>
                     <h2 className="text-lg font-semibold text-foreground glow-text flex items-center gap-2">
                         <GitMerge className="w-5 h-5 text-primary" />
@@ -107,6 +107,22 @@ export function CascadeTreeView() {
                     </h2>
                     <p className="text-sm text-muted-foreground">Monitoring Deep-Tier Multi-Financing</p>
                 </div>
+                {pos && pos.length > 0 && (
+                    <label className="text-xs flex flex-col gap-1 min-w-[200px]">
+                        <span className="text-muted-foreground uppercase font-semibold">Root PO (from DB)</span>
+                        <select
+                            className="bg-background border border-border rounded-lg px-2 py-2 text-sm font-mono"
+                            value={rootPoId ?? ""}
+                            onChange={(e) => setRootPoId(e.target.value ? Number(e.target.value) : null)}
+                        >
+                            {pos.map((p: any) => (
+                                <option key={p.id} value={p.id}>
+                                    PO-{p.id} · ₹{Number(p.amount || 0).toLocaleString("en-IN")}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                )}
             </div>
 
             {/* Metrics Banner */}
@@ -131,7 +147,9 @@ export function CascadeTreeView() {
             </div>
 
             <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                {renderNode(root)}
+                {isLoading && <div className="text-sm text-muted-foreground">Loading cascade exposure...</div>}
+                {!isLoading && !root && <div className="text-sm text-muted-foreground">No purchase orders found for cascade analysis.</div>}
+                {!isLoading && root && renderNode(root)}
             </div>
         </div>
     );

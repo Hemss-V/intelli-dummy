@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { Link } from 'wouter';
 import { useInvoiceQueue, useInvoiceDetail, useInvoiceAudits, useReEvaluateInvoice } from "@/hooks/use-dashboard-data";
-import { FileText, ArrowUpRight, Search, X, ShieldAlert, CheckCircle, AlertTriangle, Info, RefreshCw, History, ChevronRight } from "lucide-react";
+import { FileText, ArrowUpRight, Search, X, ShieldAlert, CheckCircle, AlertTriangle, Info, RefreshCw, History, ChevronRight, ExternalLink } from "lucide-react";
 
 const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-IN', {
@@ -231,6 +232,14 @@ export function InvoiceQueue() {
                                             <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold bg-muted ${details.status === 'BLOCKED' ? 'text-destructive' : 'text-primary'}`}>{details.status}</span>
                                         </div>
                                     </div>
+                                    {details.supplier_id != null && (
+                                        <Link href={`/supplier/${details.supplier_id}`}>
+                                            <a className="mt-3 flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border border-primary/30 text-primary bg-primary/5 hover:bg-primary/10 transition-colors text-xs font-bold tracking-wide uppercase">
+                                                View Complete Identity
+                                                <ExternalLink className="w-3.5 h-3.5" />
+                                            </a>
+                                        </Link>
+                                    )}
                                 </section>
 
                                 <section>

@@ -13,7 +13,7 @@ const FRAUD_RULES = [
     { id: 'payment_term_anomaly', points: 15, description: 'Payment terms >90 days' },
     { id: 'dilution_rate_high', points: 20, description: 'Rolling dilution rate >5%' },
     { id: 'triple_match_fail', points: 40, description: 'No matching PO/GRN found' },
-    { id: 'cascade_over_financing', points: 50, description: 'Total financed > 110% root PO' },
+    { id: 'cascade_over_financing', points: 70, description: 'Total financed > 110% root PO' },
     { id: 'carousel_trade_detected', points: 60, description: 'Circular trade pattern detected (90d)' },
     { id: 'isolated_node_detection', points: 10, description: 'Supplier has only one trading partner' },
     { id: 'semantic_mismatch', points: 40, description: 'Document goods descriptions mismatch' },
@@ -163,13 +163,15 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
     const rawBuyerQuery = await pool.query('SELECT COUNT(DISTINCT buyer_id) as raw_count FROM invoices WHERE supplier_id = $1', [supplierId]);
     const actualBuyerCount = Math.max(buyerCount, Number(rawBuyerQuery.rows[0].raw_count));
 
-    if (actualBuyerCount === 1) {
-        applyPenalty('single_buyer_supplier', 'Supplier has historically only transacted with one buyer');
+    const relQuery = await pool.query('SELECT invoice_count FROM trade_relationships WHERE supplier_id = $1 AND buyer_id = $2', [supplierId, buyerId]);
+    const relCount = Number(relQuery.rows[0]?.invoice_count || 0);
+
+    if (relCount < 3 && amountNum > 500000) {
+        applyPenalty('new_relationship_value', `Suspicious Volume: New relationship (count: ${relCount}) with large invoice amount $${amountNum.toFixed(2)} (>500K)`);
     }
 
-    if (actualBuyerCount === 0 && amountNum > 500000) {
-        // Technically a new relationship to this buyer on a massive invoice
-        applyPenalty('new_relationship_value', `No prior history with buyer, but amount is $${amountNum} (>500K)`);
+    if (actualBuyerCount === 1) {
+        applyPenalty('single_buyer_supplier', 'Supplier has historically only transacted with one buyer');
     }
 
     // Rule 11: Dilution rate high
@@ -294,9 +296,15 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
 
     if (status !== 'APPROVED') {
         const primaryFactor = finalBreakdown.length > 0 ? finalBreakdown[0].factor : 'unknown';
+        const contagionVolume = await graphEngineService.calculateContagionScore(supplierId);
+        
+        const alertMsg = status === 'BLOCKED' 
+            ? `Critical Block: Score ${totalScore}. Contagion Alert: ₹${(contagionVolume / 10000000).toFixed(2)} Cr volume at risk across neighbors.`
+            : `Warning: Score ${totalScore}. Contagion exposure: ₹${(contagionVolume / 10000000).toFixed(2)} Cr.`;
+
         await pool.query(
             'INSERT INTO alerts (invoice_id, lender_id, severity, fraud_rule, message) VALUES ($1, $2, $3, $4, $5)',
-            [invoiceId, lenderId, status === 'BLOCKED' ? 'CRITICAL' : 'WARNING', primaryFactor, `Invoice blocked/flagged with score ${totalScore}`]
+            [invoiceId, lenderId, status === 'BLOCKED' ? 'CRITICAL' : 'WARNING', primaryFactor, alertMsg]
         );
 
         const websocketService = require('./websocketService');

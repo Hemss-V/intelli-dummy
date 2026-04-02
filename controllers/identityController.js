@@ -86,9 +86,36 @@ const getCompanyProfile = async (req, res) => {
 
         const profileQuery = await pool.query(
             `SELECT
-                COALESCE(AVG(i.risk_score), 0) AS avg_risk_score,
-                COUNT(*) AS active_invoices,
+                COALESCE(
+                    AVG(
+                        GREATEST(
+                            COALESCE(i.risk_score, 0),
+                            CASE i.status
+                                WHEN 'BLOCKED' THEN 60
+                                WHEN 'REVIEW' THEN 30
+                                ELSE 0
+                            END
+                        )
+                    ),
+                    0
+                ) AS avg_risk_score,
+                COALESCE(
+                    MAX(
+                        GREATEST(
+                            COALESCE(i.risk_score, 0),
+                            CASE i.status
+                                WHEN 'BLOCKED' THEN 60
+                                WHEN 'REVIEW' THEN 30
+                                ELSE 0
+                            END
+                        )
+                    ),
+                    0
+                ) AS max_risk_score,
+                COUNT(*)::INT AS active_invoices,
                 COALESCE(SUM(i.amount), 0) AS total_volume,
+                BOOL_OR(i.status = 'BLOCKED') AS has_blocked_invoice,
+                BOOL_OR(i.status = 'REVIEW') AS has_review_invoice,
                 (
                     SELECT i2.status
                     FROM invoices i2
@@ -96,23 +123,67 @@ const getCompanyProfile = async (req, res) => {
                       AND (i2.supplier_id = $2 OR i2.buyer_id = $2)
                     ORDER BY i2.invoice_date DESC NULLS LAST
                     LIMIT 1
-                ) AS current_status
+                ) AS latest_invoice_status
              FROM invoices i
              WHERE i.lender_id = $1
                AND (i.supplier_id = $2 OR i.buyer_id = $2)`,
             [lenderId, companyId]
         );
 
+        const row = profileQuery.rows[0];
+        const active = row ? Number(row.active_invoices || 0) : 0;
+        const maxRisk = row ? Number(row.max_risk_score || 0) : 0;
+        const hasBlocked = row ? Boolean(row.has_blocked_invoice) : false;
+        const hasReview = row ? Boolean(row.has_review_invoice) : false;
+        const entityStatus =
+            active === 0
+                ? 'UNKNOWN'
+                : hasBlocked
+                    ? 'BLOCKED'
+                    : hasReview
+                        ? 'REVIEW'
+                        : maxRisk >= 60
+                            ? 'BLOCKED'
+                            : maxRisk >= 30
+                                ? 'REVIEW'
+                                : 'APPROVED';
+
         res.json({
             ...companyQuery.rows[0],
-            avgRiskScore: Number(profileQuery.rows[0]?.avg_risk_score || 0),
-            activeInvoices: Number(profileQuery.rows[0]?.active_invoices || 0),
-            totalVolume: Number(profileQuery.rows[0]?.total_volume || 0),
-            status: profileQuery.rows[0]?.current_status || 'APPROVED'
+            avgRiskScore: row ? Number(row.avg_risk_score || 0) : 0,
+            maxRiskScore: maxRisk,
+            latestInvoiceStatus: row?.latest_invoice_status || null,
+            activeInvoices: active,
+            totalVolume: row ? Number(row.total_volume || 0) : 0,
+            hasBlockedInvoice: hasBlocked,
+            hasReviewInvoice: hasReview,
+            status: entityStatus
         });
     } catch (error) {
         console.error('Error fetching company profile:', error);
         res.status(500).json({ error: 'Failed to fetch company profile' });
+    }
+}
+
+const getPOs = async (req, res) => {
+    try {
+        const lenderId = req.lenderId;
+        const result = await pool.query('SELECT id, amount, goods_category FROM purchase_orders WHERE lender_id = $1 ORDER BY po_date DESC', [lenderId]);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error fetching POs:', error);
+        res.status(500).json({ error: 'Failed to fetch POs' });
+    }
+}
+
+const getGRNs = async (req, res) => {
+    try {
+        const lenderId = req.lenderId;
+        const result = await pool.query('SELECT id, po_id, amount_received FROM goods_receipts WHERE lender_id = $1 ORDER BY grn_date DESC', [lenderId]);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error fetching GRNs:', error);
+        res.status(500).json({ error: 'Failed to fetch GRNs' });
     }
 }
 
@@ -121,5 +192,7 @@ module.exports = {
     revokeCredential,
     getCompanies,
     createCompany,
-    getCompanyProfile
+    getCompanyProfile,
+    getPOs,
+    getGRNs
 };

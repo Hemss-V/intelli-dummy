@@ -27,15 +27,52 @@ const getTopology = async (lenderId) => {
             c.tier,
             'company' as type,
             COALESCE(inv.avg_risk_score, 0) AS avg_risk_score,
+            COALESCE(inv.max_risk_score, 0) AS max_risk_score,
             COALESCE(inv.active_invoices, 0) AS active_invoices,
             COALESCE(inv.total_volume, 0) AS total_volume,
-            COALESCE(inv.current_status, 'APPROVED') AS current_status
+            inv.latest_invoice_status,
+            COALESCE(inv.has_blocked_invoice, FALSE) AS has_blocked_invoice,
+            COALESCE(inv.has_review_invoice, FALSE) AS has_review_invoice,
+            CASE
+                WHEN COALESCE(inv.active_invoices, 0) = 0 THEN 'UNKNOWN'
+                WHEN COALESCE(inv.has_blocked_invoice, FALSE) THEN 'BLOCKED'
+                WHEN COALESCE(inv.has_review_invoice, FALSE) THEN 'REVIEW'
+                WHEN COALESCE(inv.max_risk_score, 0) >= 60 THEN 'BLOCKED'
+                WHEN COALESCE(inv.max_risk_score, 0) >= 30 THEN 'REVIEW'
+                ELSE 'APPROVED'
+            END AS current_status,
+            EXISTS (
+                SELECT 1 FROM trade_relationships tr
+                WHERE tr.lender_id = c.lender_id
+                  AND (tr.supplier_id = c.id OR tr.buyer_id = c.id)
+            ) AS has_trade_edge
         FROM companies c
         LEFT JOIN LATERAL (
             SELECT
-                AVG(i.risk_score) AS avg_risk_score,
+                AVG(
+                    GREATEST(
+                        COALESCE(i.risk_score, 0),
+                        CASE i.status
+                            WHEN 'BLOCKED' THEN 60
+                            WHEN 'REVIEW' THEN 30
+                            ELSE 0
+                        END
+                    )
+                ) AS avg_risk_score,
+                MAX(
+                    GREATEST(
+                        COALESCE(i.risk_score, 0),
+                        CASE i.status
+                            WHEN 'BLOCKED' THEN 60
+                            WHEN 'REVIEW' THEN 30
+                            ELSE 0
+                        END
+                    )
+                ) AS max_risk_score,
                 COUNT(*) AS active_invoices,
                 SUM(i.amount) AS total_volume,
+                BOOL_OR(i.status = 'BLOCKED') AS has_blocked_invoice,
+                BOOL_OR(i.status = 'REVIEW') AS has_review_invoice,
                 (
                     SELECT i2.status
                     FROM invoices i2
@@ -43,7 +80,7 @@ const getTopology = async (lenderId) => {
                       AND (i2.supplier_id = c.id OR i2.buyer_id = c.id)
                     ORDER BY i2.invoice_date DESC NULLS LAST
                     LIMIT 1
-                ) AS current_status
+                ) AS latest_invoice_status
             FROM invoices i
             WHERE i.lender_id = c.lender_id
               AND (i.supplier_id = c.id OR i.buyer_id = c.id)
@@ -58,6 +95,17 @@ const getTopology = async (lenderId) => {
             total_volume,
             invoice_count,
             goods_category,
+            first_trade_date AS first_seen,
+            last_seen,
+            GREATEST(0, DATE_PART('day', NOW() - first_trade_date))::INT AS relationship_age_days,
+            CASE
+                WHEN total_volume >= 500000 THEN TRUE
+                ELSE FALSE
+            END AS high_volume_flag,
+            CASE
+                WHEN first_trade_date >= NOW() - INTERVAL '30 days' THEN TRUE
+                ELSE FALSE
+            END AS new_edge_flag,
             CASE
                 WHEN invoice_count >= 8 THEN 'carousel'
                 WHEN total_volume >= 500000 THEN 'gap'
@@ -73,15 +121,15 @@ const getTopology = async (lenderId) => {
     return { nodes: nodes.rows, edges: edges.rows };
 };
 
-const getEgoNetwork = async (entityId) => {
+const getEgoNetwork = async (lenderId, entityId) => {
     const query = `
         SELECT tr.*, s.name as supplier_name, b.name as buyer_name
         FROM trade_relationships tr
         JOIN companies s ON tr.supplier_id = s.id
         JOIN companies b ON tr.buyer_id = b.id
-        WHERE tr.supplier_id = $1 OR tr.buyer_id = $1
+        WHERE tr.lender_id = $1 AND (tr.supplier_id = $2 OR tr.buyer_id = $2)
     `;
-    const result = await pool.query(query, [entityId]);
+    const result = await pool.query(query, [lenderId, entityId]);
     return result.rows;
 };
 
@@ -150,13 +198,20 @@ const calculateCascadeExposure = async (rootPoId) => {
 
 const calculateCentrality = async (lenderId) => {
     const query = `
-        SELECT company_id, COUNT(DISTINCT partner_id) as degree
-        FROM (
-            SELECT supplier_id as company_id, buyer_id as partner_id FROM trade_relationships WHERE lender_id = $1
+        WITH partners AS (
+            SELECT supplier_id AS company_id, buyer_id AS partner_id FROM trade_relationships WHERE lender_id = $1
             UNION ALL
-            SELECT buyer_id as company_id, supplier_id as partner_id FROM trade_relationships WHERE lender_id = $1
-        ) partners
-        GROUP BY company_id;
+            SELECT buyer_id AS company_id, supplier_id AS partner_id FROM trade_relationships WHERE lender_id = $1
+        ),
+        deg AS (
+            SELECT company_id, COUNT(DISTINCT partner_id) AS degree
+            FROM partners
+            GROUP BY company_id
+        )
+        SELECT d.company_id, c.name AS company_name, d.degree
+        FROM deg d
+        JOIN companies c ON c.id = d.company_id AND c.lender_id = $1
+        ORDER BY d.degree DESC;
     `;
     const result = await pool.query(query, [lenderId]);
     return result.rows;
@@ -175,6 +230,109 @@ const detectIsolatedNodes = async (lenderId) => {
     return result.rows;
 };
 
+const calculateContagionScore = async (entityId) => {
+    const query = `
+        SELECT SUM(total_volume) as total_exposed_volume
+        FROM trade_relationships
+        WHERE supplier_id = $1 OR buyer_id = $1
+    `;
+    const result = await pool.query(query, [entityId]);
+    return Number(result.rows[0]?.total_exposed_volume || 0);
+};
+
+const getCascadeExposureDetails = async (lenderId, rootPoId) => {
+    const summary = await calculateCascadeExposure(rootPoId);
+
+    const tiersQuery = `
+        WITH RECURSIVE tier_hierarchy AS (
+            SELECT id, root_po_id, supplier_id, buyer_id, amount, goods_category, 1 as tier_level
+            FROM purchase_orders
+            WHERE lender_id = $1 AND id = $2
+
+            UNION ALL
+
+            SELECT po.id, po.root_po_id, po.supplier_id, po.buyer_id, po.amount, po.goods_category, th.tier_level + 1
+            FROM purchase_orders po
+            JOIN tier_hierarchy th ON po.root_po_id = th.id
+            WHERE po.lender_id = $1
+              AND th.tier_level < 10
+        )
+        SELECT th.id, th.root_po_id, th.supplier_id, th.buyer_id, th.amount, th.goods_category, th.tier_level,
+               s.name AS supplier_name, b.name AS buyer_name
+        FROM tier_hierarchy th
+        LEFT JOIN companies s ON s.id = th.supplier_id
+        LEFT JOIN companies b ON b.id = th.buyer_id
+        ORDER BY th.tier_level, th.id;
+    `;
+    const tiers = await pool.query(tiersQuery, [lenderId, rootPoId]);
+
+    return {
+        ...summary,
+        alert: summary.ratio > 1.1,
+        tiers: tiers.rows
+    };
+};
+
+const getContagionImpact = async (lenderId, entityId) => {
+    const rootNameResult = await pool.query(
+        'SELECT name FROM companies WHERE id = $1 AND lender_id = $2',
+        [entityId, lenderId]
+    );
+    const rootEntityName = rootNameResult.rows[0]?.name || null;
+
+    const neighborsQuery = `
+        WITH neighbors AS (
+            SELECT buyer_id AS neighbor_id, total_volume
+            FROM trade_relationships
+            WHERE lender_id = $1 AND supplier_id = $2
+            UNION ALL
+            SELECT supplier_id AS neighbor_id, total_volume
+            FROM trade_relationships
+            WHERE lender_id = $1 AND buyer_id = $2
+        )
+        SELECT
+            n.neighbor_id AS id,
+            c.name,
+            c.tier,
+            SUM(n.total_volume) AS exposure
+        FROM neighbors n
+        JOIN companies c ON c.id = n.neighbor_id
+        GROUP BY n.neighbor_id, c.name, c.tier
+        ORDER BY exposure DESC;
+    `;
+    const neighborsResult = await pool.query(neighborsQuery, [lenderId, entityId]);
+    const exposedEntities = neighborsResult.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        tier: row.tier,
+        exposure: Number(row.exposure || 0)
+    }));
+
+    const totalExposed = exposedEntities.reduce((sum, item) => sum + item.exposure, 0);
+    const lenderCountQuery = `
+        SELECT COUNT(DISTINCT lender_id) AS lender_count
+        FROM trade_relationships
+        WHERE lender_id = $1 AND (supplier_id = $2 OR buyer_id = $2)
+    `;
+    const lenderCountResult = await pool.query(lenderCountQuery, [lenderId, entityId]);
+    const lenderCount = Number(lenderCountResult.rows[0]?.lender_count || 0);
+
+    const contagionRiskScore = Math.min(
+        100,
+        Math.round((exposedEntities.length * 8) + (lenderCount * 10) + (totalExposed > 0 ? Math.log10(totalExposed + 1) * 8 : 0))
+    );
+
+    return {
+        rootEntityId: Number(entityId),
+        rootEntityName,
+        exposedEntityCount: exposedEntities.length,
+        lenderCount,
+        totalExposedVolume: totalExposed,
+        contagionRiskScore,
+        exposedEntities
+    };
+};
+
 module.exports = {
     updateEdgeMetadata,
     getTopology,
@@ -182,5 +340,8 @@ module.exports = {
     detectCycles,
     calculateCascadeExposure,
     calculateCentrality,
-    detectIsolatedNodes
+    detectIsolatedNodes,
+    calculateContagionScore,
+    getCascadeExposureDetails,
+    getContagionImpact
 };

@@ -8,7 +8,7 @@ import {
   Position,
   type NodeMouseHandler
 } from '@xyflow/react';
-import { useNetwork } from '@/hooks/use-dashboard-data';
+import { useNetwork, useEntityAlerts } from '@/hooks/use-dashboard-data';
 import { AlertCircle, X, ShieldAlert, CheckCircle2 } from 'lucide-react';
 
 const ScfNode = ({ data }: any) => {
@@ -50,6 +50,12 @@ const ScfNode = ({ data }: any) => {
 
 const nodeTypes = { scfNode: ScfNode };
 
+/** Matches legend & renders reliably on SVG (theme primary can fail in stroke). */
+const EDGE_VALIDATED = '#3b82f6';
+const EDGE_GAP = 'hsl(var(--destructive))';
+const EDGE_CAROUSEL = '#ca8a04';
+const EDGE_HIGH_VOLUME = '#06b6d4';
+
 const formatCompactCurrency = (value: number) => {
   return new Intl.NumberFormat('en-IN', {
     notation: 'compact',
@@ -61,52 +67,93 @@ export function NetworkGraph() {
   const { data: network, isLoading } = useNetwork();
   const [selectedNode, setSelectedNode] = useState<any>(null);
 
-  const initialNodes = useMemo(() => {
-    if (!network?.nodes) return [];
-    const sortedNodes = [...network.nodes].sort((a: any, b: any) => Number(a.id) - Number(b.id));
-    return sortedNodes.map((node: any, i: number) => {
-      let x = 0, y = 0;
-      if (node.tier === 'T1') { x = 400; y = 50; }
-      else if (node.tier === 'T2') { x = 200 + (i * 150); y = 200; }
-      else { x = 100 + ((i % 6) * 120); y = 350 + (Math.floor(i / 6) * 90); }
+  const { data: entityAlerts = [] } = useEntityAlerts(selectedNode?.id ?? null);
 
-      return {
-        id: node.id.toString(),
-        type: 'scfNode',
-        position: { x, y },
-        data: node
-      };
+  const initialNodes = useMemo(() => {
+    if (!network?.nodes?.length) return [];
+    const sortedNodes = [...network.nodes].sort((a: any, b: any) => Number(a.id) - Number(b.id));
+    const tiers = ['T1', 'T2', 'T3', 'T4', 'T5'];
+    const byTier = new Map<string, any[]>();
+    sortedNodes.forEach((node: any) => {
+      const tier = tiers.includes(node.tier) ? node.tier : 'T5';
+      const list = byTier.get(tier) || [];
+      list.push(node);
+      byTier.set(tier, list);
     });
-  }, [network]);
+
+    const tierYMap: Record<string, number> = { T1: 60, T2: 240, T3: 420, T4: 600, T5: 780 };
+    const horizontalSpacing = 260;
+    const allNodes: any[] = [];
+
+    tiers.forEach((tier) => {
+      const nodes = byTier.get(tier) || [];
+      const totalWidth = Math.max(1, nodes.length - 1) * horizontalSpacing;
+      const startX = 650 - (totalWidth / 2);
+      nodes.forEach((node: any, idx: number) => {
+        allNodes.push({
+          id: node.id.toString(),
+          type: 'scfNode',
+          position: { x: startX + (idx * horizontalSpacing), y: tierYMap[tier] || 780 },
+          data: node
+        });
+      });
+    });
+
+    return allNodes;
+  }, [network?.nodes]);
 
   const initialEdges = useMemo(() => {
-    if (!network?.edges) return [];
+    if (!network?.edges?.length) return [];
     return network.edges.map((edge: any) => {
       const isGap = edge.type === 'gap';
       const isCarousel = edge.type === 'carousel';
+      const isHighVolume = Boolean(edge.highVolumeFlag);
+      const isNewEdge = Boolean(edge.newEdgeFlag);
+      const edgeColor = isGap
+        ? EDGE_GAP
+        : isCarousel
+          ? EDGE_CAROUSEL
+          : isHighVolume
+            ? EDGE_HIGH_VOLUME
+            : EDGE_VALIDATED;
+      let dash: string | undefined = undefined;
+      if (isGap) dash = '5,5';
+      else if (isCarousel) dash = '10,5';
+      else if (isNewEdge) dash = '4,4';
+
       return {
         id: `e${edge.source}-${edge.target}`,
         source: edge.source.toString(),
         target: edge.target.toString(),
-        animated: isCarousel,
+        animated: isCarousel || isNewEdge,
         style: {
-          stroke: isGap ? 'hsl(var(--destructive))' : isCarousel ? 'hsl(var(--warning))' : 'hsl(var(--primary) / 0.5)',
-          strokeWidth: isCarousel ? 3 : 2,
-          strokeDasharray: isGap ? '5,5' : 'none',
+          stroke: edgeColor,
+          strokeWidth: isCarousel ? 3 : isHighVolume ? 2.5 : 2,
+          strokeDasharray: dash,
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: isGap ? 'hsl(var(--destructive))' : isCarousel ? 'hsl(var(--warning))' : 'hsl(var(--primary) / 0.5)',
+          color: edgeColor,
         },
       };
     });
-  }, [network]);
+  }, [network?.edges]);
 
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     setSelectedNode(node.data);
   }, []);
 
   if (isLoading) return <div className="h-full w-full flex items-center justify-center text-primary glow-text font-mono animate-pulse">ESTABLISHING TOPOLOGY LINK...</div>;
+
+  if (!isLoading && (!network?.nodes || network.nodes.length === 0)) {
+    return (
+      <div className="w-full h-full min-h-[500px] rounded-2xl border border-border/50 bg-card/40 flex flex-col items-center justify-center gap-4 p-8 text-center">
+        <p className="text-sm text-muted-foreground max-w-md">
+          No companies for this lender in the database.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-full min-h-[500px] rounded-2xl overflow-hidden glow-card border border-border/50 relative bg-background/50">
@@ -121,9 +168,11 @@ export function NetworkGraph() {
 
         <div className="bg-card/80 backdrop-blur border border-border/50 rounded-lg p-3 text-xs font-mono space-y-2 pointer-events-none">
           <div className="text-muted-foreground uppercase mb-2">Topology Legend</div>
-          <div className="flex items-center gap-2"><div className="w-4 h-0.5 bg-primary/50"></div> Validated Flow</div>
-          <div className="flex items-center gap-2"><div className="w-4 h-0.5 bg-destructive border border-dashed border-destructive"></div> Verification Gap</div>
-          <div className="flex items-center gap-2"><div className="w-4 h-0.5 bg-warning"></div> Suspected Carousel</div>
+          <div className="flex items-center gap-2"><div className="w-5 h-[3px] rounded-sm" style={{ backgroundColor: EDGE_VALIDATED }} /> Validated flow</div>
+          <div className="flex items-center gap-2"><div className="w-5 h-0 border-t-[3px] border-dashed border-destructive" /> Verification gap</div>
+          <div className="flex items-center gap-2"><div className="w-5 h-0 border-t-[3px] border-dashed" style={{ borderColor: EDGE_CAROUSEL }} /> Carousel cycle</div>
+          <div className="flex items-center gap-2"><div className="w-5 h-[3px] rounded-sm" style={{ backgroundColor: EDGE_HIGH_VOLUME }} /> High volume</div>
+          <div className="flex items-center gap-2"><div className="w-5 h-0 border-t-[3px] border-dashed border-cyan-500" /> New edge (&lt; 30d)</div>
         </div>
       </div>
 
@@ -154,10 +203,10 @@ export function NetworkGraph() {
 
           <div className="space-y-6 flex-1">
             <div className="p-4 rounded-xl border border-border/50 bg-background/50">
-              <div className="text-sm text-muted-foreground mb-1">Entity Risk Score</div>
+              <div className="text-sm text-muted-foreground mb-1">Entity risk</div>
               <div className="flex items-center gap-3">
-                <span className={`text-4xl font-mono font-black ${selectedNode.riskScore > 75 ? 'text-destructive glow-text' : selectedNode.riskScore > 40 ? 'text-warning glow-text' : 'text-primary glow-text'}`}>
-                  {selectedNode.riskScore}/100
+                <span className={`text-4xl font-mono font-black ${selectedNode.status === 'BLOCKED' || Number(selectedNode.riskScore || 0) >= 60 ? 'text-destructive glow-text' : selectedNode.status === 'REVIEW' || Number(selectedNode.riskScore || 0) >= 30 ? 'text-warning glow-text' : 'text-primary glow-text'}`}>
+                  {Number(selectedNode.riskScore || 0).toFixed(2)}/100
                 </span>
                 {selectedNode.isFlagged && <ShieldAlert className="w-6 h-6 text-destructive animate-pulse" />}
               </div>
@@ -169,7 +218,8 @@ export function NetworkGraph() {
                 <div className={`text-sm font-semibold flex items-center gap-1 ${selectedNode.status === 'BLOCKED' ? 'text-destructive' : selectedNode.status === 'REVIEW' ? 'text-warning' : 'text-primary'}`}>
                   {selectedNode.status === 'BLOCKED' ? <><AlertCircle className="w-3 h-3" /> Blocked</> :
                     selectedNode.status === 'REVIEW' ? <><AlertCircle className="w-3 h-3" /> Review</> :
-                    <><CheckCircle2 className="w-3 h-3" /> Approved</>}
+                    selectedNode.status === 'APPROVED' ? <><CheckCircle2 className="w-3 h-3" /> Approved</> :
+                    <><AlertCircle className="w-3 h-3" /> Unknown</>}
                 </div>
               </div>
               <div className="p-3 bg-muted/20 rounded-lg border border-border/50">
@@ -183,14 +233,20 @@ export function NetworkGraph() {
 
             <div className="space-y-2 mt-4">
               <div className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">
-                Active Alerts ({selectedNode.isFlagged ? 1 : 0})
+                Alerts (this entity · from DB)
               </div>
-              {selectedNode.isFlagged ? (
-                <div className="p-3 bg-destructive/10 border border-destructive/30 rounded-lg text-xs leading-relaxed text-destructive/90">
-                  <span className="font-bold">CRITICAL:</span> Node involved in suspected Tier-3 shell carousel. KYC documents failed signature check.
-                </div>
+              {entityAlerts.length === 0 ? (
+                <div className="text-sm text-muted-foreground italic">No alert rows linked to this entity&apos;s invoices.</div>
               ) : (
-                <div className="text-sm text-muted-foreground italic">No active alerts for this entity.</div>
+                <ul className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar pr-1">
+                  {entityAlerts.slice(0, 8).map((a: any) => (
+                    <li key={a.id} className="p-2 rounded-lg border border-border/50 bg-muted/20 text-[11px] text-foreground">
+                      <span className="font-semibold text-primary">{a.severity}</span>
+                      {' · '}
+                      {a.message || a.fraud_rule || 'Alert'}
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
 

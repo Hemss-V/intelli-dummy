@@ -81,28 +81,91 @@ export function useNetwork() {
         return "T1";
       };
 
-      const mappedNodes = topology.nodes.map((n: any) => ({
-        tier: normalizeTier(n.tier),
-        riskScore: Number(n.avg_risk_score || 0),
-        id: n.id,
-        label: n.name,
-        totalVolume: Number(n.total_volume || 0),
-        activeInvoices: Number(n.active_invoices || 0),
-        status: n.current_status || "APPROVED",
-        isFlagged: Number(n.avg_risk_score || 0) >= 60
-      }));
+      const mappedNodes = topology.nodes.map((n: any) => {
+        const avg = Number(n.avg_risk_score || 0);
+        const maxR = Number(n.max_risk_score || 0);
+        const status = n.current_status || "UNKNOWN";
+        return {
+          tier: normalizeTier(n.tier),
+          riskScore: maxR > 0 ? maxR : avg,
+          avgRiskScore: avg,
+          maxRiskScore: maxR,
+          id: n.id,
+          label: n.name,
+          totalVolume: Number(n.total_volume || 0),
+          activeInvoices: Number(n.active_invoices || 0),
+          status,
+          hasTradeEdge: Boolean(n.has_trade_edge),
+          hasBlockedInvoice: Boolean(n.has_blocked_invoice),
+          hasReviewInvoice: Boolean(n.has_review_invoice),
+          latestInvoiceStatus: n.latest_invoice_status ?? null,
+          isFlagged: status === "BLOCKED" || status === "REVIEW",
+        };
+      });
 
       const mappedEdges = topology.edges.map((e: any, idx: number) => ({
         id: idx + 1,
         source: e.source,
         target: e.target,
         type: e.edge_type || "normal",
-        label: `$${e.total_volume}`
+        label: `$${e.total_volume}`,
+        totalVolume: Number(e.total_volume || 0),
+        invoiceCount: Number(e.invoice_count || 0),
+        goodsCategory: e.goods_category || null,
+        firstSeen: e.first_seen || null,
+        lastSeen: e.last_seen || null,
+        relationshipAgeDays: Number(e.relationship_age_days || 0),
+        highVolumeFlag: Boolean(e.high_volume_flag),
+        newEdgeFlag: Boolean(e.new_edge_flag)
       }));
 
       return { nodes: mappedNodes, edges: mappedEdges };
     },
     refetchInterval: 10000
+  });
+}
+
+export function useCascadeExposure(rootPoId: string | number | null) {
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useQuery({
+    queryKey: ["cascade-exposure", lenderId, rootPoId],
+    queryFn: async () => {
+      if (!rootPoId) return null;
+      const res = await fetch(`${API_BASE}/graph/cascade/${rootPoId}`, { headers: getHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch cascade exposure');
+      return await res.json();
+    },
+    enabled: !!rootPoId,
+    refetchInterval: 10000
+  });
+}
+
+export function useContagionImpact(entityId: string | number | null) {
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useQuery({
+    queryKey: ["contagion-impact", lenderId, entityId],
+    queryFn: async () => {
+      if (!entityId) return null;
+      const res = await fetch(`${API_BASE}/graph/contagion/${entityId}`, { headers: getHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch contagion impact');
+      return await res.json();
+    },
+    enabled: !!entityId,
+    refetchInterval: 10000
+  });
+}
+
+export function useEntityAlerts(entityId: string | number | null) {
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useQuery({
+    queryKey: ['alerts-entity', lenderId, entityId],
+    queryFn: async () => {
+      if (!entityId) return [];
+      const res = await fetch(`${API_BASE}/alerts?entityId=${encodeURIComponent(String(entityId))}`, { headers: getHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch entity alerts');
+      return await res.json();
+    },
+    enabled: !!entityId,
   });
 }
 
@@ -216,6 +279,67 @@ export function useReEvaluateInvoice() {
       queryClient.invalidateQueries({ queryKey: ["invoice-audits", id, lenderId] });
       queryClient.invalidateQueries({ queryKey: ["invoice-queue", lenderId] });
       queryClient.invalidateQueries({ queryKey: ["kpi", lenderId] });
+    },
+  });
+}
+
+export function usePos() {
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useQuery({
+    queryKey: ["pos", lenderId],
+    queryFn: async () => {
+      // We will add a new endpoint for this or use an existing one if available
+      const res = await fetch(`${API_BASE}/identity/pos`, { headers: getHeaders() });
+      if (!res.ok) return [];
+      return await res.json();
+    },
+  });
+}
+
+export function useGrns() {
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useQuery({
+    queryKey: ["grns", lenderId],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/identity/grns`, { headers: getHeaders() });
+      if (!res.ok) return [];
+      return await res.json();
+    },
+  });
+}
+
+export function useSubmitInvoice() {
+  const queryClient = useQueryClient();
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useMutation({
+    mutationFn: async (invoice: any) => {
+      const res = await fetch(`${API_BASE}/invoices`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify(invoice),
+      });
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to submit invoice');
+      }
+      return await res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["invoice-queue", lenderId] });
+      queryClient.invalidateQueries({ queryKey: ["kpi", lenderId] });
+      queryClient.invalidateQueries({ queryKey: ["alerts", lenderId] });
+    },
+  });
+}
+
+export function useScenarios() {
+  const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+  return useQuery({
+    queryKey: ["scenarios", lenderId],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/scenarios`, { headers: getHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch scenarios');
+      return await res.json();
     },
   });
 }

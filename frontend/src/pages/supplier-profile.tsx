@@ -91,7 +91,7 @@ export default function SupplierProfilePage() {
         name: companyProfile?.name || company?.name || `Supplier ${id}`,
         tier: `Tier ${companyProfile?.tier || company?.tier || 1}`,
         status: latestStatus,
-        currentScore: Number(companyProfile?.avgRiskScore ?? avgRisk),
+        currentScore: Number(companyProfile?.maxRiskScore ?? companyProfile?.avgRiskScore ?? avgRisk),
         did: `did:sherlock:company:${id}`,
         kycStatus: latestStatus === "BLOCKED" ? "REVIEW" : "VERIFIED",
         totalVolume,
@@ -104,7 +104,7 @@ export default function SupplierProfilePage() {
         <div className="flex-1 overflow-auto bg-transparent p-4 md:p-8 custom-scrollbar">
             {/* Header */}
             <div className="mb-6 flex items-center gap-4">
-                <Link href="/">
+                <Link href="/topology">
                     <button className="p-2 bg-card border border-border/50 rounded-full hover:bg-muted transition-colors">
                         <ArrowLeft className="w-5 h-5 text-muted-foreground" />
                     </button>
@@ -131,7 +131,7 @@ export default function SupplierProfilePage() {
                         <Activity className="w-4 h-4 text-primary" /> Risk Score
                     </div>
                     <div className={`text-4xl font-mono font-bold ${isBlocked ? 'text-destructive glow-text' : 'text-primary'}`}>
-                        {supplier.currentScore}/100
+                        {Number(supplier.currentScore || 0).toFixed(2)}/100
                     </div>
                 </div>
                 <div className="bg-card p-6 rounded-2xl border border-border/50 glow-card">

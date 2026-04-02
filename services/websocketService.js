@@ -35,7 +35,16 @@ function init(server) {
     console.log("WebSocket Server Initialized with Ring Buffer");
 }
 
+function broadcastRaw(data) {
+    clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(data));
+        }
+    });
+}
+
 module.exports = {
     init,
-    broadcast
+    broadcast,
+    broadcastRaw
 };

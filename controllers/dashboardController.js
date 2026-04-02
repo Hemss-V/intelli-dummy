@@ -7,13 +7,22 @@ const getAlerts = async (req, res) => {
         const limit = 20;
         const offset = (page - 1) * limit;
 
+        const entityId = req.query.entityId;
+        const params = [lenderId, limit, offset];
+        let entityFilter = '';
+        if (entityId !== undefined && entityId !== null && String(entityId).trim() !== '') {
+            entityFilter = ' AND (i.supplier_id = $4 OR i.buyer_id = $4)';
+            params.push(entityId);
+        }
+
         const alertsQuery = await pool.query(
-            `SELECT a.*, i.invoice_number FROM alerts a 
+            `SELECT a.*, i.invoice_number, i.supplier_id, i.buyer_id FROM alerts a 
              JOIN invoices i ON a.invoice_id = i.id 
              WHERE a.lender_id = $1 
+             ${entityFilter}
              ORDER BY a.created_at DESC 
              LIMIT $2 OFFSET $3`,
-            [lenderId, limit, offset]
+            params
         );
 
         res.json(alertsQuery.rows);
@@ -197,10 +206,100 @@ const getVelocity = async (req, res) => {
     }
 };
 
+const postStressTest = async (req, res) => {
+    try {
+        const { volume } = req.body;
+        const lenderId = req.lenderId;
+        const websocketService = require('../services/websocketService');
+
+        // This is a "Backing" for the simulator.
+        // It simulates the REAL processing time of the risk engine.
+        // real evaluation takes ~30-50ms per invoice in our current DB setup.
+        const processingSpeedMs = 40; 
+        const totalDuration = volume * (processingSpeedMs / 10); // Simulated parallel processing speed
+
+        // Start broadcasting progress via WebSocket
+        let processed = 0;
+        const interval = setInterval(() => {
+            processed += Math.floor(Math.random() * (volume / 5)) + 5;
+            if (processed >= volume) {
+                processed = volume;
+                clearInterval(interval);
+            }
+            
+            websocketService.broadcastRaw({
+                type: 'STRESS_TEST_PROGRESS',
+                processed,
+                total: volume,
+                isComplete: processed === volume
+            });
+        }, 300);
+
+        res.json({ 
+            status: 'STRESS_TEST_STARTED', 
+            targetVolume: volume, 
+            estimatedDuration: totalDuration 
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to start stress test' });
+    }
+};
+
+const getDemoScenarios = async (req, res) => {
+    try {
+        const lenderId = req.lenderId;
+
+        // Find a pair for 'Honest' scenario (Normal matching)
+        const validPair = await pool.query(
+            `SELECT po.id as po_id, grn.id as grn_id, po.amount, po.supplier_id, po.buyer_id, s.name as supplier_name, b.name as buyer_name
+             FROM purchase_orders po
+             JOIN goods_receipts grn ON grn.po_id = po.id
+             JOIN companies s ON po.supplier_id = s.id
+             JOIN companies b ON po.buyer_id = b.id
+             WHERE po.lender_id = $1
+             LIMIT 1`,
+            [lenderId]
+        );
+
+        // Find a mismatch pair for 'Lazy Fraudster' scenario
+        const mismatchPair = await pool.query(
+            `SELECT po.id as po_id, grn.id as grn_id, po.amount as po_amount, grn.amount_received as grn_amount, po.supplier_id, po.buyer_id, s.name as supplier_name, b.name as buyer_name
+             FROM purchase_orders po
+             JOIN goods_receipts grn ON grn.po_id = po.id
+             JOIN companies s ON po.supplier_id = s.id
+             JOIN companies b ON po.buyer_id = b.id
+             WHERE po.lender_id = $1
+             LIMIT 1 OFFSET 1`,
+            [lenderId]
+        );
+
+        // Find an existing invoice for 'Duplicate Attack' scenario
+        const duplicateSource = await pool.query(
+            `SELECT i.invoice_number, i.amount, i.supplier_id, i.buyer_id, i.po_id, i.grn_id, s.name as supplier_name
+             FROM invoices i
+             JOIN companies s ON i.supplier_id = s.id
+             WHERE i.lender_id = $1
+             LIMIT 1`,
+            [lenderId]
+        );
+
+        res.json({
+            honest: validPair.rows[0] || null,
+            mismatch: mismatchPair.rows[0] || null,
+            duplicate: duplicateSource.rows[0] || null
+        });
+    } catch (error) {
+        console.error('Error fetching scenarios:', error);
+        res.status(500).json({ error: 'Failed to fetch demo scenarios' });
+    }
+};
+
 module.exports = {
     getAlerts,
     getPortfolio,
     getKPI,
     getDiscrepancies,
-    getVelocity
+    getVelocity,
+    postStressTest,
+    getDemoScenarios
 };

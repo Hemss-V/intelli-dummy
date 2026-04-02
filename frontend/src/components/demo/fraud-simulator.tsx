@@ -1,43 +1,82 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Play, RotateCcw, ShieldAlert, Activity, CheckCircle2 } from "lucide-react";
+import { useKPI } from "@/hooks/use-dashboard-data";
 
 export function FraudSimulator() {
     const [phase, setPhase] = useState<'idle' | 'injecting' | 'catching' | 'complete'>('idle');
     const [invoicesProcessed, setInvoicesProcessed] = useState(0);
     const [targetVolume, setTargetVolume] = useState(150);
-    const [dollarsSaved, setDollarsSaved] = useState(0);
+    const { data: kpi } = useKPI();
+    const wsRef = useRef<WebSocket | null>(null);
 
-    const baseExposurePerInvoice = 85000;
+    // Dynamic Average: Calculate real average invoice amount from current portfolio
+    const avgInvoiceAmount = useMemo(() => {
+        if (!kpi || !kpi.activeInvoices || kpi.activeInvoices === 0) return 50000; // Fallback
+        return kpi.totalExposure / kpi.activeInvoices;
+    }, [kpi]);
+
+    const formatCurrency = (value: number) => {
+        return new Intl.NumberFormat('en-IN', {
+            style: 'currency',
+            currency: 'INR',
+            maximumFractionDigits: 0,
+        }).format(value);
+    };
 
     useEffect(() => {
-        let timer: NodeJS.Timeout;
-        if (phase === 'injecting') {
-            timer = setTimeout(() => setPhase('catching'), 1500);
-        } else if (phase === 'catching') {
-            const interval = setInterval(() => {
-                setInvoicesProcessed(prev => {
-                    const nextVal = prev + Math.floor(Math.random() * (targetVolume / 10)) + 3;
-                    if (nextVal >= targetVolume) {
-                        clearInterval(interval);
+        const wsUrl = `ws://localhost:3000`;
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'STRESS_TEST_PROGRESS') {
+                    setInvoicesProcessed(data.processed);
+                    if (data.isComplete) {
                         setPhase('complete');
-                        return targetVolume;
                     }
-                    return nextVal;
-                });
-            }, 80);
-            return () => clearInterval(interval);
-        }
-        return () => clearTimeout(timer);
-    }, [phase, targetVolume]);
+                }
+            } catch (e) {
+                console.error("WS Parse error", e);
+            }
+        };
 
-    useEffect(() => {
-        setDollarsSaved(invoicesProcessed * baseExposurePerInvoice);
-    }, [invoicesProcessed]);
+        return () => {
+            ws.close();
+        };
+    }, []);
+
+    const startAnalysis = async () => {
+        setPhase('injecting');
+        
+        setTimeout(async () => {
+             try {
+                const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
+                const response = await fetch('http://localhost:3000/api/stress-test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-lender-id': lenderId
+                    },
+                    body: JSON.stringify({ volume: targetVolume })
+                });
+
+                if (!response.ok) throw new Error('Backend Stress Test Failed');
+                setPhase('catching');
+            } catch (error) {
+                console.error(error);
+                setPhase('idle');
+            }
+        }, 1200);
+    };
 
     const reset = () => {
         setPhase('idle');
         setInvoicesProcessed(0);
     };
+
+    const totalExposurePrevented = invoicesProcessed * avgInvoiceAmount;
 
     return (
         <div className="bg-card rounded-2xl p-6 glow-card border border-primary/20 h-full flex flex-col relative overflow-hidden">
@@ -50,9 +89,9 @@ export function FraudSimulator() {
                         <p className="text-sm font-bold uppercase tracking-widest text-muted-foreground mb-6">Invoices Blocked</p>
 
                         <div className="p-4 bg-muted/30 rounded-xl border border-primary/20 mb-6">
-                            <div className="text-sm text-foreground mb-1">Total Exposure Prevented</div>
+                            <div className="text-sm text-foreground mb-1 font-medium">Total Exposure Prevented</div>
                             <div className="text-2xl font-mono text-primary font-bold">
-                                ${(targetVolume * baseExposurePerInvoice).toLocaleString()}
+                                {formatCurrency(targetVolume * avgInvoiceAmount)}
                             </div>
                         </div>
 
@@ -69,7 +108,7 @@ export function FraudSimulator() {
                         <Activity className="w-5 h-5 text-destructive" />
                         Attack Simulator
                     </h2>
-                    <p className="text-sm text-muted-foreground mt-1">Stress-test defense rulesets</p>
+                    <p className="text-sm text-muted-foreground mt-1 tracking-tight">Backend-backed performance validation</p>
                 </div>
             </div>
 
@@ -86,14 +125,17 @@ export function FraudSimulator() {
                                 className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono text-center"
                             />
                         </div>
+                        <div className="text-[10px] text-center text-muted-foreground uppercase tracking-widest bg-background/50 py-1.5 rounded-lg border border-border/50">
+                            Avg Risk / Unit: <span className="text-primary font-bold">{formatCurrency(avgInvoiceAmount)}</span>
+                        </div>
                         <button
-                            onClick={() => setPhase('injecting')}
+                            onClick={startAnalysis}
                             className="group relative w-full py-4 rounded-xl bg-destructive/10 border-2 border-destructive/50 text-destructive hover:bg-destructive hover:text-white transition-all duration-300 overflow-hidden"
                         >
                             <div className="absolute inset-0 bg-destructive/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
                             <div className="relative z-10 flex flex-col items-center gap-1">
                                 <Play className="w-6 h-6" />
-                                <div className="font-bold tracking-widest uppercase text-sm">Launch Attack</div>
+                                <div className="font-bold tracking-widest uppercase text-sm">Launch Stress Test</div>
                             </div>
                         </button>
                     </div>
@@ -113,15 +155,15 @@ export function FraudSimulator() {
                         <div className="text-xl font-bold text-primary tracking-widest uppercase mb-4">AI Defense Active</div>
 
                         <div className="w-full bg-muted rounded-full h-4 mb-2 overflow-hidden border border-border">
-                            <div className="bg-primary h-full transition-all duration-100 glow-border" style={{ width: `${(invoicesProcessed / targetVolume) * 100}%` }}></div>
+                            <div className="bg-primary h-full transition-all duration-300 glow-border" style={{ width: `${(invoicesProcessed / targetVolume) * 100}%` }}></div>
                         </div>
 
                         <div className="flex justify-between w-full text-sm font-mono text-muted-foreground mb-4">
-                            <span>Intercepting</span>
+                            <span>Processing (Real-time)</span>
                             <span className="text-primary font-bold">{invoicesProcessed} / {targetVolume}</span>
                         </div>
-                        <div className="text-xs font-mono text-center text-primary/70">
-                            Saved: ${dollarsSaved.toLocaleString()}
+                        <div className="text-[10px] font-mono text-center text-primary/70 uppercase tracking-tighter">
+                             Total Blocked: {formatCurrency(totalExposurePrevented)}
                         </div>
                     </div>
                 )}

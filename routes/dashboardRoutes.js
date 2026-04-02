@@ -10,5 +10,7 @@ router.get('/lender/:id/portfolio', dashboardController.getPortfolio);
 router.get('/kpi', dashboardController.getKPI);
 router.get('/discrepancies', dashboardController.getDiscrepancies);
 router.get('/velocity', dashboardController.getVelocity);
+router.post('/stress-test', dashboardController.postStressTest);
+router.get('/scenarios', dashboardController.getDemoScenarios);
 
 module.exports = router;

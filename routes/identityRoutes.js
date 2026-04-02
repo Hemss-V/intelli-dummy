@@ -10,5 +10,7 @@ router.post('/revoke/:companyId', identityController.revokeCredential);
 router.get('/companies', identityController.getCompanies);
 router.get('/companies/:id/profile', identityController.getCompanyProfile);
 router.post('/companies', identityController.createCompany);
+router.get('/pos', identityController.getPOs);
+router.get('/grns', identityController.getGRNs);
 
 module.exports = router;
