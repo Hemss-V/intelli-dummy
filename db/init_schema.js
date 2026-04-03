@@ -4,8 +4,13 @@ const dotenv = require('dotenv');
 dotenv.config({ path: '../.env' }); // Make sure we grab it from one level up just in case, or root
 // Actually process.cwd() will be root if run from index.js directory
 
+if (!process.env.DATABASE_URL) {
+  console.error('Set DATABASE_URL in .env before running init_schema.js');
+  process.exit(1);
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || "postgresql://neondb_owner:npg_EG7XaOHL6FSZ@ep-snowy-violet-a15qdjeb-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+  connectionString: process.env.DATABASE_URL,
 });
 
 const executeSchema = async () => {
@@ -89,10 +94,11 @@ const executeSchema = async () => {
 
     CREATE TABLE IF NOT EXISTS invoice_fingerprints (
       id SERIAL PRIMARY KEY,
-      fingerprint VARCHAR(64) UNIQUE,
+      fingerprint VARCHAR(64) NOT NULL,
       invoice_id INTEGER REFERENCES invoices(id),
       lender_id INTEGER REFERENCES lenders(id),
-      created_at TIMESTAMP DEFAULT NOW()
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE (fingerprint, lender_id)
     );
 
     CREATE TABLE IF NOT EXISTS settlements (

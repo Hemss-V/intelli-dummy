@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { UploadCloud, FileText, Server, Database, Terminal, Loader2, Search, ChevronDown, Plus } from "lucide-react";
 import { useCompanies, useCreateCompany } from "@/hooks/use-dashboard-data";
+import { API_BASE } from "@/lib/api-config";
 
 export default function DataIngestionPage() {
     const [status, setStatus] = useState<'idle' | 'uploading' | 'processing' | 'complete'>('idle');
@@ -129,7 +130,7 @@ export default function DataIngestionPage() {
                 const token = localStorage.getItem('token');
                 const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
 
-                const response = await fetch('http://localhost:3000/api/invoices', {
+                const response = await fetch(`${API_BASE}/invoices`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

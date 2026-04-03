@@ -63,15 +63,16 @@ const checkTripleMatch = async (lenderId, poId, grnId, invoiceAmount, invoiceDat
         breakdown.push({ factor: 'date_sequence_fail', points: 20, detail: 'Dates not sequential: PO < GRN < Invoice' });
     }
 
-    // 4. ID Consistency Check
+    // 4. ID Consistency Check (Invoice ↔ PO)
     if (po.supplier_id !== Number(supplierId) || po.buyer_id !== Number(buyerId)) {
         penaltyPoints += 40;
         breakdown.push({ factor: 'entity_mismatch', points: 40, detail: 'Invoice supplier/buyer does not match PO' });
     }
 
-    if (grn.supplier_id !== Number(supplierId) || grn.buyer_id !== Number(buyerId)) {
+    // GRN links to the same PO as the invoice (schema stores supplier/buyer on PO only)
+    if (Number(grn.po_id) !== Number(poId)) {
         penaltyPoints += 40;
-        breakdown.push({ factor: 'entity_mismatch_grn', points: 40, detail: 'Supplier/Buyer ID mismatch between Invoice and GRN' });
+        breakdown.push({ factor: 'entity_mismatch_grn', points: 40, detail: 'GRN is not tied to this Purchase Order' });
     }
 
     return { valid: penaltyPoints === 0, points: penaltyPoints, breakdown };

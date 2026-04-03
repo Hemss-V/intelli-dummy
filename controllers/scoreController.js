@@ -24,7 +24,8 @@ const recomputeInvoiceRisk = async (lenderId, invoiceId) => {
             invoice.buyer_id,
             invoice.amount,
             invoice.invoice_date,
-            invoice.invoice_number
+            invoice.invoice_number,
+            invoiceId
         );
         if (dupCheck.isDuplicate) {
             totalPoints += dupCheck.points;

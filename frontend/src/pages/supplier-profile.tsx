@@ -3,8 +3,7 @@ import { ArrowLeft, Building2, ShieldCheck, ShieldAlert, Activity, FileText, Net
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-
-const API_BASE = "http://localhost:3000/api";
+import { API_BASE } from "@/lib/api-config";
 const getHeaders = () => ({
     "Content-Type": "application/json",
     "x-lender-id": localStorage.getItem("sherlock-lender-id") || "1"

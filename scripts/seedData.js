@@ -1,4 +1,6 @@
 const pool = require('../db/index');
+const validationService = require('../services/validationService');
+const identityService = require('../services/identityService');
 let faker;
 const loadFaker = async () => {
     const fakerModule = await import('@faker-js/faker');
@@ -45,6 +47,12 @@ const seedData = async () => {
                 companies.push(res.rows[0]);
             }
         }
+
+        for (const c of companies) {
+            await identityService.onboardSupplier(c.id);
+        }
+        console.log('-> Verifiable Credentials issued for all companies');
+
         const suppliers = companies.slice(0, 30);
         const buyers = companies.slice(30, 50);
         console.log("-> Companies created");
@@ -89,15 +97,13 @@ const seedData = async () => {
         const fakeGrnId = null;
 
         // Insert first
+        const sharedDupInvoiceNo = 'CROSS-LENDER-DUP-001';
         const inv1Res = await pool.query(
             `INSERT INTO invoices (lender_id, invoice_number, po_id, grn_id, supplier_id, buyer_id, amount, invoice_date, expected_payment_date, goods_category)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-            [lenders[0].id, 'ORIG-MULT-1', fakePoId, fakeGrnId, dupSupplier, dupBuyer, dupAmount, dupDate, faker.date.soon({ days: 30 }), 'Office Supplies']
+            [lenders[0].id, sharedDupInvoiceNo, fakePoId, fakeGrnId, dupSupplier, dupBuyer, dupAmount, dupDate, faker.date.soon({ days: 30 }), 'Office Supplies']
         );
-        // Standardize fingerprint simulation (normally done via app logic, simulating here based on validationService)
-        const crypto = require('crypto');
-        const raw = `${dupSupplier}-${dupBuyer}-${Number(dupAmount).toFixed(2)}-${dupDate.toISOString().split('T')[0]}`;
-        const fingerprint = crypto.createHash('sha256').update(raw).digest('hex');
+        const fingerprint = validationService.generateFingerprint(dupSupplier, dupBuyer, sharedDupInvoiceNo, dupAmount, dupDate);
 
         await pool.query('INSERT INTO invoice_fingerprints (invoice_id, lender_id, fingerprint) VALUES ($1, $2, $3)', [inv1Res.rows[0].id, lenders[0].id, fingerprint]);
 
@@ -106,7 +112,7 @@ const seedData = async () => {
             const res = await pool.query(
                 `INSERT INTO invoices (lender_id, invoice_number, po_id, grn_id, supplier_id, buyer_id, amount, invoice_date, expected_payment_date, status, risk_score, goods_category)
                  VALUES ($1, $2, null, null, $3, $4, $5, $6, $7, 'BLOCKED', 95, 'Office Supplies') RETURNING id`,
-                [lenders[i].id, `DUPE-MULT-${i}`, dupSupplier, dupBuyer, dupAmount, dupDate, faker.date.soon({ days: 30 })]
+                [lenders[i].id, sharedDupInvoiceNo, dupSupplier, dupBuyer, dupAmount, dupDate, faker.date.soon({ days: 30 })]
             );
             const invId = res.rows[0].id;
             await pool.query('INSERT INTO risk_score_audits (invoice_id, score, breakdown) VALUES ($1, $2, $3)', [
@@ -128,7 +134,7 @@ const seedData = async () => {
             burstTime.setMinutes(burstTime.getMinutes() + 5); // 5 mins apart
             const res = await pool.query(
                 `INSERT INTO invoices (lender_id, invoice_number, po_id, grn_id, supplier_id, buyer_id, amount, invoice_date, expected_payment_date, status, risk_score, goods_category)
-                 VALUES ($1, $2, null, null, $3, $4, $5, $6, $7, 'UNDER REVIEW', 88, 'Raw Materials') RETURNING id`,
+                 VALUES ($1, $2, null, null, $3, $4, $5, $6, $7, 'REVIEW', 88, 'Raw Materials') RETURNING id`,
                 [mainLender, `BURST-${i}`, dormantSupplier.id, buyers[1].id, faker.number.int({ min: 5000, max: 20000 }), burstTime, faker.date.soon({ days: 30 })]
             );
             const invId = res.rows[0].id;
@@ -170,7 +176,7 @@ const seedData = async () => {
             nightTime.setMinutes(nightTime.getMinutes() + 2); // 2 mins apart
             const res = await pool.query(
                 `INSERT INTO invoices (lender_id, invoice_number, po_id, grn_id, supplier_id, buyer_id, amount, invoice_date, expected_payment_date, status, risk_score, goods_category)
-                 VALUES ($1, $2, null, null, $3, $4, $5, $6, $7, 'UNDER REVIEW', 90, 'Consumer Goods') RETURNING id`,
+                 VALUES ($1, $2, null, null, $3, $4, $5, $6, $7, 'REVIEW', 90, 'Consumer Goods') RETURNING id`,
                 [mainLender, `BOT-${baseSeq + i}`, botSupplier.id, buyers[3].id, faker.number.int({ min: 1000, max: 5000 }), nightTime, faker.date.soon({ days: 30 })]
             );
             const invId = res.rows[0].id;

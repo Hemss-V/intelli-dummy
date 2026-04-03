@@ -115,10 +115,48 @@ async function revokeCredential(companyId) {
     await pool.query('UPDATE companies SET is_revoked = true, credential_verified = false WHERE id = $1', [companyId]);
 }
 
+/**
+ * Verifies stored VC signature on every invoice submission (shell-company blocker).
+ */
+async function assertSupplierCredentialValid(supplierId) {
+    const compQuery = await pool.query(
+        'SELECT id, verifiable_credential, credential_verified, is_revoked FROM companies WHERE id = $1',
+        [supplierId]
+    );
+    if (compQuery.rows.length === 0) {
+        return { ok: false, reason: 'Supplier not found' };
+    }
+    const row = compQuery.rows[0];
+    if (row.is_revoked) {
+        return { ok: false, reason: 'Credential revoked — invoice processing blocked' };
+    }
+    if (!row.verifiable_credential) {
+        return { ok: false, reason: 'No Verifiable Credential on file — supplier must onboard first' };
+    }
+    let vc;
+    try {
+        vc = typeof row.verifiable_credential === 'string' ? JSON.parse(row.verifiable_credential) : row.verifiable_credential;
+    } catch {
+        return { ok: false, reason: 'Invalid Verifiable Credential payload' };
+    }
+    if (!verifyVC(vc)) {
+        return { ok: false, reason: 'Verifiable Credential signature verification failed' };
+    }
+    const expectedDid = generateDID(supplierId);
+    if (vc.credentialSubject?.id !== expectedDid) {
+        return { ok: false, reason: 'VC subject DID does not match supplier' };
+    }
+    if (!row.credential_verified) {
+        await pool.query('UPDATE companies SET credential_verified = true WHERE id = $1', [supplierId]);
+    }
+    return { ok: true };
+}
+
 module.exports = {
     generateDID,
     issueVC,
     verifyVC,
     onboardSupplier,
-    revokeCredential
+    revokeCredential,
+    assertSupplierCredentialValid
 };

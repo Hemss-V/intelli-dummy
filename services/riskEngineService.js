@@ -143,44 +143,118 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
         applyPenalty('payment_term_anomaly', `Payment terms of ${Math.round(termDays)} days exceeds 90-day standard`);
     }
 
-    // Rule 6 & 4: Velocity/Bot Anomaly Proxy
-    const hourlyVolQuery = await pool.query(`
-        SELECT COUNT(*) as recent_count 
-        FROM invoices 
-        WHERE supplier_id = $1 AND invoice_date >= (CAST($2 AS TIMESTAMP) - INTERVAL '1 hour')
-    `, [supplierId, invoiceDate]);
+    // Rule 4 & 6: Velocity — rolling 1h / 24h / 7d vs baseline
+    const hourlyVolQuery = await pool.query(
+        `
+        SELECT COUNT(*)::int AS recent_count
+        FROM invoices
+        WHERE supplier_id = $1
+          AND id != $3
+          AND invoice_date >= (CAST($2 AS TIMESTAMP) - INTERVAL '1 hour')
+    `,
+        [supplierId, invoiceDate, invoiceId]
+    );
     const recentCount = Number(hourlyVolQuery.rows[0].recent_count);
 
+    const vel24Query = await pool.query(
+        `
+        SELECT COUNT(*)::int AS c
+        FROM invoices
+        WHERE supplier_id = $1
+          AND id != $3
+          AND invoice_date >= (CAST($2 AS TIMESTAMP) - INTERVAL '24 hours')
+    `,
+        [supplierId, invoiceDate, invoiceId]
+    );
+    const vel7Query = await pool.query(
+        `
+        SELECT COUNT(*)::int AS c
+        FROM invoices
+        WHERE supplier_id = $1
+          AND id != $3
+          AND invoice_date >= (CAST($2 AS TIMESTAMP) - INTERVAL '7 days')
+    `,
+        [supplierId, invoiceDate, invoiceId]
+    );
+    const count24 = Number(vel24Query.rows[0].c);
+    const count7 = Number(vel7Query.rows[0].c);
+    const dailyAvg7 = count7 / 7;
+
     if (recentCount > 5) {
-        applyPenalty('sequential_invoice_nos', `Bot-pattern proxy: ${recentCount} invoices submitted in the last hour`);
         applyPenalty('velocity_anomaly', `High velocity: ${recentCount} invoices in rolling 1-hour window`);
     }
+    if (dailyAvg7 >= 0.5 && count24 > dailyAvg7 * 3) {
+        applyPenalty(
+            'velocity_anomaly',
+            `24h submission count (${count24}) exceeds 3× the trailing 7-day daily average (${dailyAvg7.toFixed(2)})`
+        );
+    }
 
-    // Rule 8 & 9: Relationship Rules
+    const invNoRow = await pool.query('SELECT invoice_number FROM invoices WHERE id = $1', [invoiceId]);
+    const currentInvNo = invNoRow.rows[0]?.invoice_number || '';
+    const parseTailNumber = (s) => {
+        const m = String(s).match(/(\d{3,})$/);
+        return m ? parseInt(m[1], 10) : NaN;
+    };
+    const prevNums = await pool.query(
+        `
+        SELECT invoice_number FROM invoices
+        WHERE supplier_id = $1 AND id != $2
+        ORDER BY invoice_date DESC
+        LIMIT 5
+    `,
+        [supplierId, invoiceId]
+    );
+    const curN = parseTailNumber(currentInvNo);
+    const prevN = prevNums.rows.length ? parseTailNumber(prevNums.rows[0].invoice_number) : NaN;
+    if (!Number.isNaN(curN) && !Number.isNaN(prevN) && Math.abs(curN - prevN) === 1) {
+        applyPenalty('sequential_invoice_nos', `Sequential invoice numbering pattern (${prevN} → ${curN})`);
+    }
+
+    // Rule 8 & 9: Relationship — new high-value when supplier–buyer relationship age < 60 days
     const tradeRelQuery = await pool.query('SELECT COUNT(DISTINCT buyer_id) as buyer_count FROM trade_relationships WHERE supplier_id = $1', [supplierId]);
     const buyerCount = Number(tradeRelQuery.rows[0].buyer_count || 0);
 
     const rawBuyerQuery = await pool.query('SELECT COUNT(DISTINCT buyer_id) as raw_count FROM invoices WHERE supplier_id = $1', [supplierId]);
     const actualBuyerCount = Math.max(buyerCount, Number(rawBuyerQuery.rows[0].raw_count));
 
-    const relQuery = await pool.query('SELECT invoice_count FROM trade_relationships WHERE supplier_id = $1 AND buyer_id = $2', [supplierId, buyerId]);
-    const relCount = Number(relQuery.rows[0]?.invoice_count || 0);
+    const firstBetween = await pool.query(
+        `
+        SELECT MIN(invoice_date) AS first_dt
+        FROM invoices
+        WHERE supplier_id = $1 AND buyer_id = $2 AND id != $3
+    `,
+        [supplierId, buyerId, invoiceId]
+    );
+    const firstPairDate = firstBetween.rows[0]?.first_dt;
+    const relAgeDays = firstPairDate
+        ? (invDateObj - new Date(firstPairDate)) / (1000 * 60 * 60 * 24)
+        : 0;
 
-    if (relCount < 3 && amountNum > 500000) {
-        applyPenalty('new_relationship_value', `Suspicious Volume: New relationship (count: ${relCount}) with large invoice amount $${amountNum.toFixed(2)} (>500K)`);
+    if (amountNum > 500000 && relAgeDays < 60) {
+        applyPenalty(
+            'new_relationship_value',
+            `Large invoice on a relationship younger than 60 days (first prior invoice between parties: ${
+                firstPairDate ? new Date(firstPairDate).toISOString().slice(0, 10) : 'none'
+            })`
+        );
     }
 
     if (actualBuyerCount === 1) {
         applyPenalty('single_buyer_supplier', 'Supplier has historically only transacted with one buyer');
     }
 
-    // Rule 11: Dilution rate high
-    const dilutionQuery = await pool.query(`
-        SELECT SUM(i.amount) as expected_total, SUM(s.actual_payment_amount) as actual_total
+    // Rule 11: Rolling dilution (90-day window)
+    const dilutionQuery = await pool.query(
+        `
+        SELECT SUM(i.amount) AS expected_total, SUM(s.actual_payment_amount) AS actual_total
         FROM invoices i
         JOIN settlements s ON i.id = s.invoice_id
         WHERE i.supplier_id = $1
-    `, [supplierId]);
+          AND s.payment_date >= (CAST($2 AS TIMESTAMP) - INTERVAL '90 days')
+    `,
+        [supplierId, invoiceDate]
+    );
 
     if (dilutionQuery.rows[0] && dilutionQuery.rows[0].expected_total) {
         const expTotal = Number(dilutionQuery.rows[0].expected_total);
@@ -188,7 +262,10 @@ const evaluateRisk = async (lenderId, invoiceId, supplierId, buyerId, amount, in
         if (expTotal > 0 && actTotal > 0) {
             const dilutionRate = (expTotal - actTotal) / expTotal;
             if (dilutionRate > 0.05) {
-                applyPenalty('dilution_rate_high', `Historical dilution rate is ${(dilutionRate * 100).toFixed(1)}% (Threshold: 5%)`);
+                applyPenalty(
+                    'dilution_rate_high',
+                    `Rolling 90-day dilution rate is ${(dilutionRate * 100).toFixed(1)}% (threshold: 5%)`
+                );
             }
         }
     }

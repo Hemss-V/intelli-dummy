@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { API_BASE, WS_URL } from "@/lib/api-config";
 import { AlertTriangle, Clock, ServerCrash, Zap } from "lucide-react";
 
 interface Alert {
@@ -27,7 +28,7 @@ export function AlertsPanel({ onSelectAlert }: AlertsPanelProps) {
     const fetchExistingAlerts = async () => {
       try {
         const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
-        const res = await fetch(`http://localhost:3000/api/dashboard/alerts?page=1`, {
+        const res = await fetch(`${API_BASE}/alerts?page=1`, {
           headers: { 'x-lender-id': lenderId }
         });
         if (res.ok) {
@@ -51,8 +52,7 @@ export function AlertsPanel({ onSelectAlert }: AlertsPanelProps) {
     fetchExistingAlerts();
 
     // 2. Determine WS URL and connect
-    const wsUrl = `ws://localhost:3000`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(WS_URL);
 
     ws.onopen = () => setIsConnected(true);
     ws.onclose = () => setIsConnected(false);

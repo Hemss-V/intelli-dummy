@@ -3,6 +3,7 @@ const validationService = require('../services/validationService');
 const riskEngineService = require('../services/riskEngineService');
 const graphEngineService = require('../services/graphEngineService');
 const explainabilityService = require('../services/explainabilityService');
+const identityService = require('../services/identityService');
 
 const submitInvoice = async (req, res) => {
     try {
@@ -14,14 +15,10 @@ const submitInvoice = async (req, res) => {
             return res.status(400).json({ error: 'Missing required invoice fields' });
         }
 
-        // 0. Identity Gate (VC Check FIRST)
-        const compQuery = await pool.query('SELECT credential_verified, is_revoked FROM companies WHERE id = $1', [supplier_id]);
-        if (compQuery.rows.length === 0) {
-            return res.status(400).json({ error: 'Supplier not found' });
-        }
-        const company = compQuery.rows[0];
-        if (!company.credential_verified || company.is_revoked) {
-            return res.status(403).json({ error: 'Identity Not Verified' });
+        // 0. Identity Gate — verified VC (Ed25519) + not revoked
+        const gate = await identityService.assertSupplierCredentialValid(supplier_id);
+        if (!gate.ok) {
+            return res.status(403).json({ error: gate.reason || 'Identity Not Verified' });
         }
 
         // 1. Generate Fingerprint
@@ -53,7 +50,16 @@ const submitInvoice = async (req, res) => {
         }
 
         // 5. Triple Match Validation
-        const tripleCheck = await validationService.checkTripleMatch(lenderId, po_id, grn_id, amount, invoiceDate, supplier_id, buyer_id);
+        const tripleCheck = await validationService.checkTripleMatch(
+            lenderId,
+            po_id,
+            grn_id,
+            amount,
+            invoiceDate,
+            supplier_id,
+            buyer_id,
+            invoice_number
+        );
 
         totalPoints += tripleCheck.points;
         finalBreakdown.push(...tripleCheck.breakdown);

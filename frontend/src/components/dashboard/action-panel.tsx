@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { API_BASE } from "@/lib/api-config";
 
 interface ActionPanelProps {
   selectedInvoiceId?: string | number | null;
@@ -37,8 +38,8 @@ export function ActionPanel({ selectedInvoiceId, defaultAmount }: ActionPanelPro
         const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
         
         const [invRes, auditRes] = await Promise.all([
-          fetch(`http://localhost:3000/api/invoices/${selectedInvoiceId}`, { headers: { 'x-lender-id': lenderId } }),
-          fetch(`http://localhost:3000/api/invoices/${selectedInvoiceId}/audits`, { headers: { 'x-lender-id': lenderId } })
+          fetch(`${API_BASE}/invoices/${selectedInvoiceId}`, { headers: { 'x-lender-id': lenderId } }),
+          fetch(`${API_BASE}/invoices/${selectedInvoiceId}/audits`, { headers: { 'x-lender-id': lenderId } })
         ]);
 
         if (invRes.ok && auditRes.ok) {
@@ -79,8 +80,8 @@ export function ActionPanel({ selectedInvoiceId, defaultAmount }: ActionPanelPro
 
     try {
       const endpoint = type === 'override' 
-        ? `http://localhost:3000/api/invoices/${selectedInvoiceId}/override` 
-        : `http://localhost:3000/api/invoices/${selectedInvoiceId}/disburse`;
+        ? `${API_BASE}/invoices/${selectedInvoiceId}/override` 
+        : `${API_BASE}/invoices/${selectedInvoiceId}/disburse`;
       
       const response = await fetch(endpoint, {
         method: 'POST',

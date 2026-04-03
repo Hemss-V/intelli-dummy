@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { Play, RotateCcw, ShieldAlert, Activity, CheckCircle2 } from "lucide-react";
 import { useKPI } from "@/hooks/use-dashboard-data";
+import { API_BASE, WS_URL } from "@/lib/api-config";
 
 export function FraudSimulator() {
     const [phase, setPhase] = useState<'idle' | 'injecting' | 'catching' | 'complete'>('idle');
@@ -26,8 +27,7 @@ export function FraudSimulator() {
     };
 
     useEffect(() => {
-        const wsUrl = `ws://localhost:3000`;
-        const ws = new WebSocket(wsUrl);
+        const ws = new WebSocket(WS_URL);
         wsRef.current = ws;
 
         ws.onmessage = (event) => {
@@ -56,7 +56,7 @@ export function FraudSimulator() {
         setTimeout(async () => {
              try {
                 const lenderId = localStorage.getItem('sherlock-lender-id') || '1';
-                const response = await fetch('http://localhost:3000/api/stress-test', {
+                const response = await fetch(`${API_BASE}/stress-test`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

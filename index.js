@@ -30,9 +30,24 @@ app.use('/api/identity', require('./routes/identityRoutes'));
 
 const websocketService = require('./services/websocketService');
 
-const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => {
+const PORT = Number(process.env.PORT) || 3000;
+
+// Express 5 wires a listen() callback to server.once('error', ...), so a port conflict
+// still invoked the "success" callback. Bind only on 'listening' and handle errors explicitly.
+const server = app.listen(PORT);
+
+server.once('listening', () => {
     console.log(`Server is running on port ${PORT}`);
+    websocketService.init(server);
 });
 
-websocketService.init(server);
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(
+            `Port ${PORT} is already in use. Stop the other Node process (e.g. another terminal running npm start) or set PORT in .env.`
+        );
+    } else {
+        console.error('Server failed to start:', err);
+    }
+    process.exit(1);
+});

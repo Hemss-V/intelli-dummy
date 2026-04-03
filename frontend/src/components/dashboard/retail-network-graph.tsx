@@ -10,8 +10,7 @@ import {
 } from '@xyflow/react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertCircle, X, ShieldAlert, CheckCircle2 } from 'lucide-react';
-
-const API_BASE = 'http://localhost:3000/api';
+import { API_BASE } from '@/lib/api-config';
 
 const ScfNode = ({ data }: any) => {
     const isFlagged = data.isFlagged;
